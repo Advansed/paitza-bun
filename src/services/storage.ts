@@ -5,7 +5,7 @@ export const FOTOS_BUCKET = "kz-files";
 
 function client() {
   return new S3Client({
-    region: process.env.S3_REGION || process.env.YC_REGION || "eu-central-1",
+    region: process.env.S3_REGION || "eu-central-1",
     endpoint: process.env.S3_ENDPOINT || "https://object.pscloud.io",
     forcePathStyle: true,
     credentials: {
@@ -125,17 +125,4 @@ export async function presignPut(bucket: string, key: string, expiresIn = 60) {
 export async function presignGet(bucket: string, key: string, expiresIn = 60) {
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return getSignedUrl(client(), command, { expiresIn, signableHeaders: new Set(["host"]) });
-}
-
-export function vkClient() {
-  return new S3Client({
-    region: "ru-msk",
-    endpoint: process.env.VK_URL,
-    credentials: {
-      accessKeyId: process.env.VK_ACCESS_KEY ?? "",
-      secretAccessKey: process.env.VK_SECRET_KEY ?? "",
-    },
-    forcePathStyle: false,
-    requestChecksumCalculation: "WHEN_REQUIRED",
-  });
 }

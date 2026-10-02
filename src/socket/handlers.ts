@@ -1,5 +1,6 @@
 import type { Server } from "socket.io";
 import { call } from "../domain/call";
+import { type Result } from "../lib/result";
 import { analyzeCargo, sendMessage } from "../services/ai";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
 import { checkGatewayCode, sendGatewayVerification } from "../services/sms";
@@ -9,7 +10,7 @@ import { SocketManager, type AppSocket } from "./manager";
 
 const sockets = new SocketManager();
 
-async function method(socket: AppSocket, path: string, params: Record<string, unknown>) {
+async function method(socket: AppSocket, path: string, params: Record<string, unknown>): Promise<Result> {
   try {
     const data = await call(path, params);
     socket.emit(path, data);

@@ -10,10 +10,7 @@ import {
   presignPut,
   resolveImageInput,
   uploadFotos,
-  vkClient,
 } from "../services/storage";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const ALLOWED = [
   "http://localhost:8100",
@@ -192,23 +189,6 @@ export function createApp() {
       signUrl,
       publicUrl: `https://object.pscloud.io/docfotos/${fileName}`,
     });
-  });
-
-  app.get("/api/get_VKUrl", async (c) => {
-    const user = await userByToken(c.req.query("token"));
-    if (!user) return c.json({ error: true, message: "Неверный токен" }, 401);
-    const filename = c.req.query("filename");
-    if (!filename) return c.json({ error: true, message: "filename обязателен" }, 400);
-    const bucket = process.env.VK_BUCKET || "";
-    const command = new PutObjectCommand({ Bucket: bucket, Key: filename });
-    let uploadUrl = await getSignedUrl(vkClient(), command, { expiresIn: 3600, signableHeaders: new Set(["host"]) });
-    const urlObj = new URL(uploadUrl);
-    urlObj.searchParams.set("X-Amz-Content-Sha256", "UNSIGNED_PAYLOAD");
-    urlObj.searchParams.delete("x-id");
-    urlObj.searchParams.delete("x-amz-user-agent");
-    uploadUrl = urlObj.toString();
-    const fileUrl = `https://${bucket}.hb.ru-msk.vkcloud-storage.ru/${filename}`;
-    return c.json({ uploadUrl, fileUrl });
   });
 
   app.post("/api/auth/send-delete-code", (c) => c.json({

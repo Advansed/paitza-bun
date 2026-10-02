@@ -16,6 +16,19 @@ export function tinkoffToken(requestData: Record<string, unknown>) {
   return createHash("sha256").update(values.join(""), "utf8").digest("hex");
 }
 
+type SbpPaymentResult =
+  | { success: false; message: string | undefined; error_code: string | undefined }
+  | {
+      success: true;
+      payment_id: string;
+      payment_url: string | undefined;
+      order_id: string | undefined;
+      status: string | undefined;
+      qr_url: string | null;
+      sbp_payload: string | null;
+      sbp_deep_link: string | null;
+    };
+
 export async function createSBPPayment(orderData: {
   amount: number;
   orderId: string;
@@ -26,7 +39,7 @@ export async function createSBPPayment(orderData: {
   email?: string;
   phone?: string;
   RedirectDueDate?: string;
-}) {
+}): Promise<SbpPaymentResult> {
   const { terminalKey, password } = config();
   const body: Record<string, unknown> = {
     TerminalKey: terminalKey,
