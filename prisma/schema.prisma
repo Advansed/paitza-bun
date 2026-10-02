@@ -1,0 +1,551 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+/// Аналог SEQUENCE Seq_CargoCode (START WITH 4).
+model SeqCargoCode {
+  id        Int @id @default(1)
+  nextValue Int @default(4) @map("next_value")
+
+  @@map("seq_cargo_code")
+}
+
+model User {
+  id            String    @id @db.Char(36)
+  code          String    @unique @db.NVarChar(16)
+  name          String    @db.NVarChar(255)
+  email         String?   @db.NVarChar(255)
+  password      String    @db.NVarChar(128)
+  token         String?   @db.Char(36)
+  image         String?   @db.LongText
+  userType      Int       @map("user_type")
+  description   String?   @db.LongText
+  emailEnabled  Boolean   @default(false) @map("email_enabled")
+  smsEnabled    Boolean   @default(false) @map("sms_enabled")
+  ordersEnabled Boolean   @default(false) @map("orders_enabled")
+  marketEnabled Boolean   @default(false) @map("market_enabled")
+  orders        Decimal   @default(0) @db.Decimal(15, 2)
+  rating        Decimal   @default(0) @db.Decimal(15, 2)
+  paid          Decimal   @default(0) @db.Decimal(15, 2)
+  pincode       String?   @db.VarChar(6)
+  passport      String?   @db.LongText
+  account       Decimal?  @db.Decimal(15, 2)
+  gender        Boolean?
+  requestId     String?   @map("requestId") @db.VarChar(50)
+  pushToken     String?   @map("push_token") @db.NVarChar(50)
+  birthDate     DateTime? @map("birth_date")
+  birthPlace    String?   @map("birth_place") @db.VarChar(64)
+  tax           Int?
+
+  agreementsAsClient     Agreement[]      @relation("AgreementClient")
+  agreementsAsDriver     Agreement[]      @relation("AgreementDriver")
+  memberships            CompanyMember[]
+  dealsAsClient          Deal[]           @relation("DealClient")
+  dealsAsPerformer       Deal[]           @relation("DealPerformer")
+  drivenTransportations  Transportation[] @relation("TransportationDriver")
+
+  @@index([token])
+  @@map("t_users")
+}
+
+model Transport {
+  id              String   @id @db.Char(36)
+  ownerId         String   @map("owner_id") @db.Char(36)
+  code            String?  @db.NVarChar(50)
+  name            String   @db.NVarChar(255)
+  licensePlate    String   @unique @map("license_plate") @db.NVarChar(20)
+  vin             String?  @db.NVarChar(17)
+  manufactureYear Int?     @map("manufacture_year")
+  image           String?  @db.LongText
+  experience      Int?
+  loadCapacity    Decimal? @map("load_capacity") @db.Decimal(10, 2)
+  transportType   String?  @map("transport_type") @db.Char(36)
+  driverPhone     String?  @map("driver_phone") @db.VarChar(24)
+  driverFio       String?  @map("driver_fio") @db.VarChar(255)
+
+  @@map("t_transport")
+}
+
+model Transportation {
+  id         String   @id @db.Char(36)
+  period     DateTime
+  lineNumber Int      @map("line_number")
+  isActive   Boolean  @map("is_active")
+  client     String   @db.Char(36)
+  cargo      String?  @db.Char(36)
+  transport  String   @db.Char(36)
+  weight     Decimal? @db.Decimal(15, 3)
+  volume     Decimal? @db.Decimal(15, 3)
+  cost       Decimal? @db.Decimal(15, 2)
+  status     Int?
+  rating     Decimal? @db.Decimal(3, 2)
+  driverId   String?  @map("driver_id") @db.Char(36)
+
+  driver     User?      @relation("TransportationDriver", fields: [driverId], references: [id])
+  agreement  Agreement?
+  deals      Deal[]
+  dealLefts  DealLeft[]
+  documents  Document[]
+
+  @@index([cargo])
+  @@index([client, status])
+  @@map("t_transportations")
+}
+
+model DealLeft {
+  dealId      String  @map("deal_id") @db.Char(36)
+  clientId    String  @map("client") @db.Char(36)
+  performerId String  @map("performer") @db.Char(36)
+  advance     Decimal @default(0) @db.Decimal(15, 2)
+  summ        Decimal @default(0) @db.Decimal(15, 2)
+  amount      Decimal @default(0) @db.Decimal(15, 2)
+
+  transportation Transportation @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@id([dealId, clientId, performerId])
+  @@map("t_deals_lefts")
+}
+
+model Cargo {
+  id             String    @id @db.Char(36)
+  code           String?   @db.VarChar(9)
+  name           String    @db.NVarChar(255)
+  route          String?   @db.Char(36)
+  routeDistance  Decimal?  @map("route_distance") @db.Decimal(15, 2)
+  weight         Decimal?  @db.Decimal(15, 3)
+  contactPhone   String?   @map("contact_phone") @db.NVarChar(24)
+  client         String?   @db.Char(36)
+  price          Decimal?  @db.Decimal(15, 2)
+  cost           Decimal?  @db.Decimal(15, 2)
+  advance        Decimal?  @db.Decimal(15, 2)
+  pickupDate     DateTime? @map("pickup_date")
+  deliveryDate   DateTime? @map("delivery_date")
+  description    String?   @db.NVarChar(1024)
+  contactName    String?   @map("contact_name") @db.NVarChar(128)
+  volume         Decimal?  @db.Decimal(15, 3)
+  insurance      Decimal?  @db.Decimal(15, 2)
+  transportType  String?   @map("transport_type") @db.VarChar(36)
+
+  routePoints CargoRoutePoint[]
+  agreements  Agreement[]
+
+  @@index([client])
+  @@map("t_cargo")
+}
+
+/// location — MySQL POINT SRID 4326. Чтение и запись только через raw SQL.
+model CargoRoutePoint {
+  id          String                      @id @db.Char(36)
+  cargoId     String                      @map("cargo_id") @db.Char(36)
+  sequenceNum Int                         @map("sequence_num")
+  pointType   String                      @map("point_type") @db.VarChar(20)
+  city        String?                     @db.NVarChar(150)
+  address     String?                     @db.NVarChar(500)
+  location    Unsupported("point SRID 4326")
+
+  cargo Cargo @relation(fields: [cargoId], references: [id], onDelete: Cascade)
+
+  @@index([cargoId, sequenceNum])
+  @@map("t_cargo_route_point")
+}
+
+model Company {
+  id                     String   @id @default(uuid()) @db.Char(36)
+  client                 String   @db.Char(36)
+  companyType            Int      @map("company_type") @db.UnsignedTinyInt
+  countryCode            String   @default("RU") @map("country_code") @db.Char(2)
+  taxNumber              String   @map("tax_number") @db.VarChar(32)
+  taxNumber2             String?  @map("tax_number_2") @db.VarChar(32)
+  regNumber              String?  @map("reg_number") @db.VarChar(32)
+  duns                   String?  @db.VarChar(9)
+  name                   String   @db.NVarChar(500)
+  shortName              String?  @map("short_name") @db.NVarChar(255)
+  nameEn                 String?  @map("name_en") @db.NVarChar(500)
+  basis                  String?  @db.NVarChar(256)
+  address                String?  @db.NVarChar(500)
+  postalAddress          String?  @map("postal_address") @db.NVarChar(500)
+  addressEn              String?  @map("address_en") @db.NVarChar(500)
+  phone                  String?  @db.VarChar(20)
+  email                  String?  @db.VarChar(255)
+  description            String?  @db.NVarChar(1000)
+  currency               String   @default("RUB") @db.Char(3)
+  bankBeneficiaryName    String?  @map("bank_beneficiary_name") @db.NVarChar(500)
+  bankName               String?  @map("bank_name") @db.NVarChar(255)
+  bankAddress            String?  @map("bank_address") @db.NVarChar(500)
+  bankCountryCode        String?  @map("bank_country_code") @db.Char(2)
+  bankAccount            String?  @map("bank_account") @db.VarChar(50)
+  iban                   String?  @db.VarChar(34)
+  swiftBic               String?  @map("swift_bic") @db.VarChar(11)
+  localBankCode          String?  @map("local_bank_code") @db.VarChar(32)
+  intermediaryBankName   String?  @map("intermediary_bank_name") @db.NVarChar(255)
+  intermediaryBankSwift  String?  @map("intermediary_bank_swift") @db.VarChar(11)
+  intermediaryBankAccount String? @map("intermediary_bank_account") @db.VarChar(50)
+  payoutType             String   @default("BANK_ACCOUNT") @map("payout_type") @db.VarChar(16)
+  cardNumberMask         String?  @map("card_number_mask") @db.VarChar(19)
+  isVerified             Boolean  @default(false) @map("is_verified")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
+
+  members CompanyMember[]
+
+  @@index([client])
+  @@map("t_company")
+}
+
+model Agreement {
+  id               String    @id @db.Char(36)
+  cargoId          String    @map("cargo_id") @db.Char(36)
+  driverId         String    @map("driver_id") @db.Char(36)
+  clientId         String    @map("client_id") @db.Char(36)
+  createdDate      DateTime  @map("created_date")
+  status           Int       @db.UnsignedTinyInt
+  terms            String?   @db.LongText
+  contractPdf      Bytes?    @map("contract_pdf")
+  clientSign       String?   @map("client_sign") @db.LongText
+  driverSign       String?   @map("driver_sign") @db.LongText
+  clientSignedDate DateTime? @map("client_signed_date")
+  driverSignedDate DateTime? @map("driver_signed_date")
+  isActive         Boolean   @default(true) @map("is_active")
+
+  transportation Transportation @relation(fields: [id], references: [id], onDelete: Cascade)
+  cargo          Cargo          @relation(fields: [cargoId], references: [id])
+  client         User           @relation("AgreementClient", fields: [clientId], references: [id])
+  driver         User           @relation("AgreementDriver", fields: [driverId], references: [id])
+
+  @@map("t_agreements")
+}
+
+model Log {
+  id     String    @id @default(uuid()) @db.Char(36)
+  date   DateTime?
+  method String?   @db.VarChar(128)
+  body   String?   @db.LongText
+
+  @@map("logs")
+}
+
+model CargoTotal {
+  cargoId        String    @id @map("cargo_id") @db.Char(36)
+  totalInvoices  Int       @default(0) @map("total_invoices")
+  orderedWeight  Decimal   @default(0) @map("ordered_weight") @db.Decimal(15, 3)
+  countCompleted Int       @default(0) @map("count_completed")
+  maxStatus      Int?      @map("max_status")
+  maxOddStatus   Int?      @map("max_odd_status")
+  minEvenStatus  Int?      @map("min_even_status")
+  publishDate    DateTime? @map("publish_date")
+
+  @@map("t_cargo_totals")
+}
+
+model Chat {
+  id          String   @id @db.Char(36)
+  cargo       String   @db.Char(36)
+  sender      String   @db.Char(36)
+  recipient   String   @db.Char(36)
+  createdDate DateTime @map("created_date")
+  message     String?  @db.NVarChar(1024)
+  isRead      Boolean  @default(false) @map("read")
+  image       String?  @db.LongText
+  status      Int?
+
+  @@index([cargo, sender, recipient])
+  @@map("t_chats")
+}
+
+model CompanyMember {
+  id         String   @id @default(uuid()) @db.Char(36)
+  companyId  String   @map("company_id") @db.Char(36)
+  userId     String   @map("user_id") @db.Char(36)
+  memberRole String   @default("driver") @map("member_role") @db.VarChar(32)
+  status     Int      @default(1) @db.UnsignedTinyInt
+  joinedAt   DateTime @default(now()) @map("joined_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@map("t_company_members")
+}
+
+model Deal {
+  id               String   @id @default(uuid()) @db.Char(36)
+  period           DateTime @default(now())
+  recorderType     String   @map("recorder_type") @db.VarChar(32)
+  recorderId       String   @map("recorder_id") @db.Char(36)
+  dealId           String   @map("deal_id") @db.Char(36)
+  clientId         String   @map("client") @db.Char(36)
+  performerId      String   @map("performer") @db.Char(36)
+  advance          Decimal  @default(0) @db.Decimal(15, 2)
+  summ             Decimal  @default(0) @db.Decimal(15, 2)
+  debt             Decimal  @default(0) @db.Decimal(15, 2)
+  flow             Boolean  @default(true)
+
+  transportation Transportation @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  client         User           @relation("DealClient", fields: [clientId], references: [id])
+  performer      User           @relation("DealPerformer", fields: [performerId], references: [id])
+
+  @@index([dealId])
+  @@map("t_deals")
+}
+
+model Dialog {
+  id            String  @id @default(uuid()) @db.Char(36)
+  cargoId       String  @map("cargo_id") @db.Char(36)
+  customerId    String  @map("customer_id") @db.Char(36)
+  driverId      String  @map("driver_id") @db.Char(36)
+  isActive      Boolean @default(true) @map("is_active")
+  totalMessages Int     @default(0) @map("total_messages")
+
+  @@index([customerId, isActive])
+  @@index([driverId, isActive])
+  @@map("t_dialogs")
+}
+
+model Document {
+  id          String   @id @default(uuid()) @db.Char(36)
+  docNumber   String?  @map("doc_number") @db.NVarChar(32)
+  docDate     DateTime @default(now()) @map("doc_date")
+  docType     String   @map("doc_type") @db.VarChar(32)
+  dealId      String?  @map("deal_id") @db.Char(36)
+  sender      String   @db.Char(36)
+  recipient   String   @db.Char(36)
+  amount      Decimal  @db.Decimal(15, 2)
+  currency    String   @default("RUB") @db.VarChar(5)
+  category    String   @db.VarChar(48)
+  posted      Boolean  @default(false)
+  description String?  @db.NVarChar(500)
+
+  transportation Transportation? @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@unique([dealId, docType])
+  @@map("t_document")
+}
+
+model FileRow {
+  id         String    @id @default(uuid()) @db.Char(36)
+  fileType   String?   @map("file_type") @db.VarChar(15)
+  owner      String    @db.Char(36)
+  dataUrl    String?   @map("dataUrl") @db.LongText
+  uploadedAt DateTime? @map("uploaded_at")
+
+  @@map("t_files")
+}
+
+model Invoice {
+  id             String    @id @default(uuid()) @db.Char(36)
+  invoiceNumber  String?   @map("invoice_number") @db.NVarChar(50)
+  invoiceDate    DateTime  @map("invoice_date") @db.Date
+  sellerId       String    @map("seller_id") @db.Char(36)
+  userId         String    @map("user") @db.Char(36)
+  paymentDue     String?   @map("payment_due") @db.NVarChar(100)
+  paymentPurpose String?   @map("payment_purpose") @db.NVarChar(300)
+  signer         String?   @db.NVarChar(100)
+  totalAmount    Decimal   @map("total_amount") @db.Decimal(15, 2)
+  vatAmount      Decimal   @map("vat_amount") @db.Decimal(15, 2)
+  orderStatus    Int       @map("orderStatus")
+  posted         Bytes     @default(dbgenerated("(0x00)")) @db.Binary(1)
+  currency       String    @default("RUB") @db.NVarChar(10)
+  rrn            String?   @db.NVarChar(30)
+  createdAt      DateTime? @default(now()) @map("created_at")
+  updatedAt      DateTime? @updatedAt @map("updated_at")
+
+  items InvoiceItem[]
+
+  @@index([orderStatus])
+  @@index([rrn])
+  @@index([sellerId])
+  @@index([userId])
+  @@map("t_invoice")
+}
+
+model InvoiceItem {
+  id        String  @id @default(uuid()) @db.Char(36)
+  invoiceId String  @map("invoice_id") @db.Char(36)
+  itemName  String  @map("item_name") @db.NVarChar(200)
+  qty       Decimal @db.Decimal(10, 2)
+  unit      String  @db.NVarChar(20)
+  price     Decimal @db.Decimal(15, 2)
+  total     Decimal @db.Decimal(15, 2)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@map("t_invoice_item")
+}
+
+model InvoiceCheck {
+  id          String   @id @default(uuid()) @db.Char(36)
+  date        DateTime @default(now())
+  description String?  @db.LongText
+
+  @@map("t_invoices_check")
+}
+
+model Kassa {
+  id       String   @db.Char(36)
+  category String   @db.VarChar(48)
+  period   DateTime
+  flow     Boolean
+  userId   String   @map("user") @db.Char(36)
+  amount   Decimal  @db.Decimal(15, 2)
+  currency String   @db.VarChar(5)
+
+  @@id([id, category, userId])
+  @@map("t_kassa")
+}
+
+model KassaLeft {
+  userId   String  @map("user") @db.Char(36)
+  currency String  @db.VarChar(5)
+  category String  @db.VarChar(48)
+  amount   Decimal @db.Decimal(15, 2)
+
+  @@id([userId, currency, category])
+  @@map("t_kassa_lefts")
+}
+
+model Location {
+  userId String   @map("user_id") @db.Char(36)
+  period DateTime
+  lat    Decimal? @db.Decimal(15, 8)
+  lon    Decimal? @db.Decimal(15, 8)
+
+  @@id([userId, period])
+  @@map("t_locations")
+}
+
+model Operation {
+  id         String    @id @default(uuid()) @db.Char(36)
+  rrn        String    @unique @db.VarChar(50)
+  payPurpose String?   @map("pay_purpose") @db.VarChar(256)
+  inn        String?   @db.VarChar(20)
+  kpp        String?   @db.VarChar(20)
+  amount     Decimal?  @db.Decimal(15, 2)
+  currency   Int?
+  docDate    DateTime? @map("doc_date")
+  createdAt  DateTime? @default(now()) @map("created_at")
+
+  @@map("t_operations")
+}
+
+model Org {
+  id          String  @id @default(uuid()) @db.Char(36)
+  name        String  @db.NVarChar(200)
+  address     String  @db.NVarChar(300)
+  inn         String  @db.NVarChar(20)
+  kpp         String? @db.NVarChar(20)
+  ogrn        String? @db.NVarChar(20)
+  account     String? @db.NVarChar(30)
+  bank        String? @db.NVarChar(200)
+  bankInn     String? @map("bank_inn") @db.NVarChar(20)
+  bik         String? @db.NVarChar(20)
+  korAcct     String? @map("kor_acct") @db.NVarChar(30)
+  bankAddress String? @map("bank_address") @db.NVarChar(300)
+
+  @@map("t_orgs")
+}
+
+model Passport {
+  userId      String    @id @map("user_id") @db.Char(36)
+  series      String?   @db.VarChar(4)
+  number      String?   @db.VarChar(6)
+  issueDate   DateTime? @map("issue_date") @db.Date
+  issuedBy    String?   @map("issued_by") @db.NVarChar(500)
+  birthDate   DateTime? @map("birth_date") @db.Date
+  birthPlace  String?   @map("birth_place") @db.NVarChar(255)
+  regAddress  String?   @map("reg_address") @db.NVarChar(500)
+  actAddress  String?   @map("act_address") @db.NVarChar(500)
+  mainPhoto   String?   @map("main_photo") @db.LongText
+  regPhoto    String?   @map("reg_photo") @db.LongText
+  createdDate DateTime  @map("created_date")
+  updatedDate DateTime  @map("updated_date")
+  isVerified  Boolean   @default(false) @map("is_verified")
+
+  @@map("t_passports")
+}
+
+model Payment {
+  id          String    @id @db.Char(36)
+  date        DateTime?
+  userId      String?   @map("user") @db.Char(36)
+  type        Int?
+  cargo       String?   @db.Char(36)
+  description String?   @db.VarChar(1024)
+  amount      Decimal?  @db.Decimal(15, 2)
+  currency    String?   @db.VarChar(5)
+  phone       String?   @db.VarChar(16)
+  email       String?   @db.VarChar(128)
+  formUrl     String?   @map("formUrl") @db.VarChar(512)
+  paymentId   String?   @map("paymentId") @db.VarChar(50)
+  orderStatus Int?      @map("orderStatus")
+  posted      Boolean?
+
+  @@index([orderStatus])
+  @@map("t_payments")
+}
+
+model TransportType {
+  id          String   @id @db.Char(36)
+  name        String   @db.VarChar(255)
+  description String?  @db.NVarChar(1024)
+  formula     Int?
+  minTarif    Decimal? @map("min_tarif") @db.Decimal(15, 2)
+  maxTarif    Decimal? @map("max_tarif") @db.Decimal(15, 2)
+
+  @@map("t_transport_types")
+}
+
+/// Очереди обмена 1С. CREATE TABLE в дампе нет, процедуры p_upd_* их читают.
+model UpdCargo {
+  id     String @id @db.Char(36)
+  action Int?
+
+  @@map("upd_cargo")
+}
+
+model UpdKassa {
+  id     String @id @db.Char(36)
+  action Int?
+
+  @@map("upd_kassa")
+}
+
+model UpdCompany {
+  id              String    @id @db.Char(36)
+  client          String?   @db.Char(36)
+  companyType     Int?      @map("company_type")
+  inn             String?   @db.NVarChar(32)
+  kpp             String?   @db.NVarChar(32)
+  ogrn            String?   @db.NVarChar(32)
+  name            String?   @db.NVarChar(500)
+  shortName       String?   @map("short_name") @db.NVarChar(255)
+  address         String?   @db.NVarChar(500)
+  postalAddress   String?   @map("postal_address") @db.NVarChar(500)
+  phone           String?   @db.VarChar(20)
+  email           String?   @db.VarChar(255)
+  description     String?   @db.NVarChar(1000)
+  bankName        String?   @map("bank_name") @db.NVarChar(255)
+  bankBik         String?   @map("bank_bik") @db.NVarChar(20)
+  bankAccount     String?   @map("bank_account") @db.VarChar(50)
+  bankCorrAccount String?   @map("bank_corr_account") @db.VarChar(50)
+  isVerified      Boolean?  @map("is_verified")
+  createdAt       DateTime? @map("created_at")
+  updatedAt       DateTime? @map("updated_at")
+  basis           String?   @db.NVarChar(256)
+  action          Int?
+
+  @@map("upd_company")
+}
+
+model UserRating {
+  userId      String  @id @map("user_id") @db.Char(36)
+  ratingSum   Decimal @default(0) @map("rating_sum") @db.Decimal(15, 2)
+  ratingCount Int     @default(0) @map("rating_count")
+  avgRating   Decimal @default(0) @map("avg_rating") @db.Decimal(3, 2)
+
+  @@map("t_user_ratings")
+}
