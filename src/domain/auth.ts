@@ -1,3 +1,5 @@
+import { randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { promisify } from "node:util";
 import { prisma } from "../db";
 import { getPhone } from "../lib/phone";
 import {
@@ -15,6 +17,28 @@ import {
 import { agreementsOf, notificationsOf, ratingsOf, userByToken } from "../lib/user";
 
 type Params = Record<string, unknown>;
+
+const scryptAsync = promisify(scrypt);
+const SCRYPT_PREFIX = "scrypt:";
+const SALT_BYTES = 16;
+const KEYLEN = 32;
+
+async function hashPassword(password: string): Promise<string> {
+  if (!password) return "";
+  const salt = randomBytes(SALT_BYTES);
+  const hash = await scryptAsync(password, salt, KEYLEN) as Buffer;
+  return `${SCRYPT_PREFIX}${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  if (!stored.startsWith(SCRYPT_PREFIX)) return stored === password;
+  const [saltHex, hashHex] = stored.slice(SCRYPT_PREFIX.length).split(":");
+  if (!saltHex || !hashHex) return false;
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = await scryptAsync(password, Buffer.from(saltHex, "hex"), expected.length) as Buffer;
+  if (actual.length !== expected.length) return false;
+  return timingSafeEqual(actual, expected);
+}
 
 function emptyUser(id: string, phone: string, extra: {
   name?: string;
@@ -55,11 +79,9 @@ export async function authorization(params: Params): Promise<Result> {
   const pass = asString(params.password);
   if (!code || !pass) return fail("Не указан телефон или пароль");
 
-  const user = await prisma.user.findFirst({ where: { code, password: pass } });
-  if (!user) {
-    const exists = await prisma.user.findFirst({ where: { code }, select: { id: true } });
-    return fail(exists ? "Пароль не верен" : "Пользователь не найден");
-  }
+  const user = await prisma.user.findFirst({ where: { code } });
+  if (!user) return fail("Пользователь не найден");
+  if (!(await verifyPassword(pass, user.password))) return fail("Пароль не верен");
 
   return ok({
     data: {
@@ -194,7 +216,7 @@ export async function save_password(params: Params): Promise<Result> {
 
   const updated = await prisma.user.update({
     where: { id: user.id },
-    data: { password: pass ?? "", pincode: null, requestId: null },
+    data: { password: pass ? await hashPassword(pass) : "", pincode: null, requestId: null },
   });
 
   return ok({
@@ -227,7 +249,7 @@ export async function restore_password(params: Params): Promise<Result> {
   const newToken = uuid();
   await prisma.user.update({
     where: { id: user.id },
-    data: { password: password ?? "", token: newToken },
+    data: { password: password ? await hashPassword(password) : "", token: newToken },
   });
 
   return ok({
@@ -313,7 +335,7 @@ export async function set_user(params: Params): Promise<Result> {
       description: params.description == null ? user.description : String(params.description),
       userType: params.user_type == null ? user.userType : Number(params.user_type),
       image: params.image == null ? user.image : String(params.image),
-      password: params.password == null ? user.password : String(params.password),
+      password: params.password == null ? user.password : await hashPassword(String(params.password)),
     },
   });
   return ok({ message: "Данные обновлены" });
