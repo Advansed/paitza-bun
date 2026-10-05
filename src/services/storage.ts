@@ -2,6 +2,7 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export const FOTOS_BUCKET = "kz-files";
+const BUCKETS = new Set([FOTOS_BUCKET, "chat-fotos", "docfotos"]);
 
 function client() {
   return new S3Client({
@@ -124,11 +125,18 @@ export async function presignGet(bucket: string, key: string, expiresIn = 60) {
   return getSignedUrl(client(), command, { expiresIn, signableHeaders: new Set(["host"]) });
 }
 
-export async function fileAccess(bucket: string, key: string) {
+function assertBucket(bucket: string) {
+  if (!BUCKETS.has(bucket)) throw new Error("Неизвестный бакет");
+}
+
+export async function uploadUrl(bucket: string, key: string) {
+  assertBucket(bucket);
   const filePath = normalizeKey(key);
-  const [upload_url, signed_url] = await Promise.all([
-    presignPut(bucket, filePath),
-    presignGet(bucket, filePath),
-  ]);
-  return { filePath, upload_url, signed_url };
+  return { filePath, upload_url: await presignPut(bucket, filePath) };
+}
+
+export async function signedUrl(bucket: string, key: string) {
+  assertBucket(bucket);
+  const filePath = normalizeKey(key);
+  return { filePath, signed_url: await presignGet(bucket, filePath) };
 }

@@ -5,8 +5,9 @@ import { sockets } from "../socket/handlers";
 import { mailer } from "../services/mail";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
 import {
-  fileAccess,
   getFotosBuffer,
+  signedUrl,
+  uploadUrl,
   resolveImageInput,
   uploadFotos,
 } from "../services/storage";
@@ -164,19 +165,8 @@ export function createApp() {
     return c.json({ success: true, data: user });
   });
 
-  app.get("/api/getUrl", async (c) => {
-    const user = await userByToken(c.req.query("token"));
-    if (!user) return c.json({ error: "Неверный токен" }, 401);
-    const fileName = `${c.req.query("cargo_id")}/${user.id}/${c.req.query("recipient_id")}/${c.req.query("filename")}`;
-    return c.json(await fileAccess("chat-fotos", fileName));
-  });
-
-  app.get("/api/uploadURL", async (c) => {
-    const user = await userByToken(c.req.query("token"));
-    if (!user) return c.json({ error: "Неверный токен" }, 401);
-    const fileName = c.req.query("filename") || "";
-    return c.json(await fileAccess("docfotos", fileName));
-  });
+  app.get("/api/upload_url", async (c) => signFile(c, "upload"));
+  app.get("/api/signed_url", async (c) => signFile(c, "read"));
 
   app.post("/api/auth/send-delete-code", (c) => c.json({
     success: false,
@@ -191,6 +181,21 @@ export function createApp() {
   app.get("/api/deleteAccount", (c) => c.html(deletePage()));
 
   return app;
+}
+
+async function signFile(
+  c: { req: { query: (name: string) => string | undefined }; json: (body: unknown, status?: number) => Response },
+  kind: "upload" | "read",
+) {
+  const user = await userByToken(c.req.query("token"));
+  if (!user) return c.json({ error: "Неверный токен" }, 401);
+  const bucket = c.req.query("bucket") || "";
+  const key = c.req.query("key") || "";
+  try {
+    return c.json(kind === "upload" ? await uploadUrl(bucket, key) : await signedUrl(bucket, key));
+  } catch (error) {
+    return c.json({ error: error instanceof Error ? error.message : "Ошибка" }, 400);
+  }
 }
 
 async function checkPassport(c: { req: { json: () => Promise<Record<string, unknown>> }; json: (b: unknown, s?: number) => Response }, kind: "photo" | "registration") {
