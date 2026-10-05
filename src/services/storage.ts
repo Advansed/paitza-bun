@@ -21,10 +21,6 @@ export function s3() {
   return client();
 }
 
-function publicBase() {
-  return (process.env.S3_PUBLIC_BASE || "https://object.pscloud.io").replace(/\/$/, "");
-}
-
 function normalizeKey(key: string) {
   if (!key) throw new Error("filename (key) обязателен");
   return key.replace(/^\/+/, "");
@@ -45,7 +41,7 @@ export async function uploadFotos(key: string, body: Uint8Array, contentType?: s
     Body: body,
     ContentType: contentType || "application/octet-stream",
   }));
-  return { filePath, publicUrl: `${publicBase()}/${FOTOS_BUCKET}/${filePath}` };
+  return { filePath, signed_url: await presignGet(FOTOS_BUCKET, filePath) };
 }
 
 export async function getFotosBuffer(key: string) {
@@ -114,15 +110,25 @@ export function decodeBase64File(input: string, fallbackMime = "application/octe
 }
 
 export async function presignPut(bucket: string, key: string, expiresIn = 60) {
+  assertCredentials();
   const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: "" });
-  const uploadUrl = await getSignedUrl(client(), command, {
+  return getSignedUrl(client(), command, {
     expiresIn,
     signableHeaders: new Set(["host"]),
   });
-  return uploadUrl;
 }
 
 export async function presignGet(bucket: string, key: string, expiresIn = 60) {
+  assertCredentials();
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
   return getSignedUrl(client(), command, { expiresIn, signableHeaders: new Set(["host"]) });
+}
+
+export async function fileAccess(bucket: string, key: string) {
+  const filePath = normalizeKey(key);
+  const [upload_url, signed_url] = await Promise.all([
+    presignPut(bucket, filePath),
+    presignGet(bucket, filePath),
+  ]);
+  return { filePath, upload_url, signed_url };
 }

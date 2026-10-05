@@ -10,7 +10,7 @@ import { SocketManager, type AppSocket } from "./manager";
 
 const sockets = new SocketManager();
 
-const method                                         = async (socket: AppSocket, path: string, params: Record<string, unknown>): Promise<Result> => {
+const method                                        = async (socket: AppSocket, path: string, params: Record<string, unknown>): Promise<Result> => {
   try {
     const data = await call(path, params);
     socket.emit(path, data);

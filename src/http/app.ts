@@ -5,9 +5,8 @@ import { sockets } from "../socket/handlers";
 import { mailer } from "../services/mail";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
 import {
+  fileAccess,
   getFotosBuffer,
-  presignGet,
-  presignPut,
   resolveImageInput,
   uploadFotos,
 } from "../services/storage";
@@ -169,26 +168,14 @@ export function createApp() {
     const user = await userByToken(c.req.query("token"));
     if (!user) return c.json({ error: "Неверный токен" }, 401);
     const fileName = `${c.req.query("cargo_id")}/${user.id}/${c.req.query("recipient_id")}/${c.req.query("filename")}`;
-    const uploadUrl = await presignPut("chat-fotos", fileName);
-    return c.json({
-      uploadUrl,
-      filePath: fileName,
-      publicUrl: `https://object.pscloud.io/chat-fotos/${fileName}`,
-    });
+    return c.json(await fileAccess("chat-fotos", fileName));
   });
 
   app.get("/api/uploadURL", async (c) => {
     const user = await userByToken(c.req.query("token"));
     if (!user) return c.json({ error: "Неверный токен" }, 401);
     const fileName = c.req.query("filename") || "";
-    const uploadUrl = await presignPut("docfotos", fileName);
-    const signUrl = await presignGet("docfotos", fileName);
-    return c.json({
-      uploadUrl,
-      filePath: fileName,
-      signUrl,
-      publicUrl: `https://object.pscloud.io/docfotos/${fileName}`,
-    });
+    return c.json(await fileAccess("docfotos", fileName));
   });
 
   app.post("/api/auth/send-delete-code", (c) => c.json({
