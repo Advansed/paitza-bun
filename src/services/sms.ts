@@ -1,5 +1,6 @@
 const GATEWAY_URL = "https://gatewayapi.telegram.org/";
 
+
 export async function sendSMS(to: string, msg: string) {
   const apiId = process.env.SMS_API_KEY;
   if (!apiId) throw new Error("SMS_API_KEY отсутствует в переменных окружения.");
@@ -18,17 +19,21 @@ export async function sendGatewayVerification(phoneNumber: string) {
   const key = process.env.TELEGRAM_KEY;
   if (!key) return { success: false, message: "TELEGRAM_KEY не задан" };
   const cleanPhone = phoneNumber.replace(/\D/g, "");
+  const payload = { phone_number: cleanPhone, code_length: 4, ttl: 120 };
+  console.log("Telegram sendVerificationMessage:", payload);
   try {
     const response = await fetch(`${GATEWAY_URL}sendVerificationMessage`, {
       method: "POST",
       headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ phone_number: cleanPhone, code_length: 4, ttl: 120 }),
+      body: JSON.stringify(payload),
     });
     const data = await response.json() as { ok?: boolean; result?: { request_id?: string }; error?: string };
+    console.log("Telegram sendVerificationMessage ответ:", response.status, data);
     if (data.ok && data.result?.request_id) return { success: true, request_id: data.result.request_id };
     return { success: false, message: data.error || "Неизвестная ошибка API" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    console.log("Telegram sendVerificationMessage ошибка:", message);
     return { success: false, message };
   }
 }

@@ -10,7 +10,7 @@ import { SocketManager, type AppSocket } from "./manager";
 
 const sockets = new SocketManager();
 
-async function method(socket: AppSocket, path: string, params: Record<string, unknown>): Promise<Result> {
+const method                                         = async (socket: AppSocket, path: string, params: Record<string, unknown>): Promise<Result> => {
   try {
     const data = await call(path, params);
     socket.emit(path, data);
@@ -26,7 +26,7 @@ async function method(socket: AppSocket, path: string, params: Record<string, un
   }
 }
 
-function notifyOpponent(socket: AppSocket, recipientId: unknown, extra: Record<string, unknown>) {
+const notifyOpponent                                = (socket: AppSocket, recipientId: unknown, extra: Record<string, unknown>) => {
   if (!recipientId) return;
   const payload = {
     cargo: extra.cargo,
@@ -40,7 +40,7 @@ function notifyOpponent(socket: AppSocket, recipientId: unknown, extra: Record<s
   }
 }
 
-async function refreshOnlineDriversWorks() {
+const refreshOnlineDriversWorks                     = async () => {
   const groups = new Map<string, AppSocket[]>();
   for (const socket of sockets.findSocketsByUserType(2)) {
     if (!socket.userToken) continue;
@@ -57,7 +57,7 @@ async function refreshOnlineDriversWorks() {
   }));
 }
 
-async function handleAuth(socket: AppSocket, event: string, data: Record<string, unknown>) {
+const handleAuth                                    = async (socket: AppSocket, event: string, data: Record<string, unknown>) => {
   try {
     if (event === "check_sms") {
       const result = await call("check_sms", data);
@@ -127,7 +127,20 @@ async function handleAuth(socket: AppSocket, event: string, data: Record<string,
   }
 }
 
-export function attachSockets(io: Server) {
+const checkPassport                                 = async (socket: AppSocket, event: string, data: Record<string, unknown>) =>{
+  try {
+    const resolved = await resolveImageInput(data);
+    const options = { mimeType: resolved.mimeType, expected: data.expected };
+    const result = event === "check_passport_photo"
+      ? await verifyPassportPhoto(resolved.image, options)
+      : await verifyPassportRegistration(resolved.image, options);
+    socket.emit(event, resolved.filePath ? { ...result, filePath: resolved.filePath } : result);
+  } catch (error) {
+    socket.emit(event, { success: false, message: error instanceof Error ? error.message : "Ошибка проверки паспорта" });
+  }
+}
+
+export const attachSockets                          = (io: Server) => {
   io.on("connection", (raw) => {
     const socket = raw as AppSocket;
     console.log("Новое подключение:", socket.id);
@@ -348,20 +361,7 @@ export function attachSockets(io: Server) {
   return sockets;
 }
 
-async function checkPassport(socket: AppSocket, event: string, data: Record<string, unknown>) {
-  try {
-    const resolved = await resolveImageInput(data);
-    const options = { mimeType: resolved.mimeType, expected: data.expected };
-    const result = event === "check_passport_photo"
-      ? await verifyPassportPhoto(resolved.image, options)
-      : await verifyPassportRegistration(resolved.image, options);
-    socket.emit(event, resolved.filePath ? { ...result, filePath: resolved.filePath } : result);
-  } catch (error) {
-    socket.emit(event, { success: false, message: error instanceof Error ? error.message : "Ошибка проверки паспорта" });
-  }
-}
-
-export async function pollPayments() {
+export const pollPayments                           = async () => {
   const result = await call("check_payment", {});
   const rows = Array.isArray(result.data) ? result.data as Array<{ paymentId?: string; OrderId?: string }> : [];
   for (const row of rows) {
