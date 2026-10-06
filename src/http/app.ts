@@ -171,9 +171,10 @@ export function createApp() {
     const user = await userByToken(c.req.query("token"));
     if (!user) return c.json({ error: "Неверный токен" }, 401);
     const bucket = c.req.param("bucket");
+    const prefix = `/api/media/${bucket}/`;
     let key = "";
     try {
-      key = decodeURIComponent(c.req.param("*") ?? "");
+      key = c.req.path.startsWith(prefix) ? decodeURIComponent(c.req.path.slice(prefix.length)) : "";
     } catch {
       return c.json({ error: "Недопустимый ключ" }, 400);
     }
