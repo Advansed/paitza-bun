@@ -20,11 +20,7 @@ import { recalcLefts, rubBalance } from "./kassa";
 
 type Params = Record<string, unknown>;
 
-function cargoStatus(tot: {
-  maxStatus: number | null;
-  maxOddStatus: number | null;
-  minEvenStatus: number | null;
-} | null) {
+function cargoStatus(moves: Array<{ status: number | null; weight: unknown }>) {
   const oddNames: Record<number, string> = {
     11: "Есть заказы",
     13: "Ждет загрузку",
@@ -39,12 +35,35 @@ function cargoStatus(tot: {
     18: "Разгружается",
     20: "Завершено",
   };
+  const statuses = moves.map((m) => m.status).filter((s): s is number => s != null);
+  const active = moves.filter((m) => {
+    const status = m.status ?? -1;
+    return status >= 11 && status <= 20;
+  });
+  const odds = active.map((m) => m.status ?? 0).filter((s) => s % 2 === 1);
+  const evens = active.map((m) => m.status ?? 0).filter((s) => s % 2 === 0);
+  const maxOddStatus = odds.length ? Math.max(...odds) : null;
+  const minEvenStatus = evens.length ? Math.min(...evens) : null;
+  const maxStatus = statuses.length ? Math.max(...statuses) : null;
+  const ordered_weight = active.reduce((sum, m) => sum + n(m.weight), 0);
+
   let status = "Новый";
-  if (tot?.maxStatus === 10) status = "В ожидании";
-  else if (tot && tot.maxOddStatus != null) status = oddNames[tot.maxOddStatus] ?? "Проблемы";
-  else if (tot) status = tot.minEvenStatus != null ? (evenNames[tot.minEvenStatus] ?? "Проблемы") : "Проблемы";
-  const status_code = !tot ? 0 : tot.maxOddStatus != null ? tot.maxOddStatus : (tot.minEvenStatus ?? 0);
-  return { status, status_code, requires_action: tot?.maxOddStatus != null ? 1 : 0 };
+  let status_code = 0;
+  if (!statuses.length) {
+    status = "Новый";
+  } else if (maxStatus === 10) {
+    status = "В ожидании";
+    status_code = 10;
+  } else if (maxOddStatus != null) {
+    status = oddNames[maxOddStatus] ?? "Проблемы";
+    status_code = maxOddStatus;
+  } else if (minEvenStatus != null) {
+    status = evenNames[minEvenStatus] ?? "Проблемы";
+    status_code = minEvenStatus;
+  } else {
+    status = "Проблемы";
+  }
+  return { status, status_code, requires_action: maxOddStatus != null ? 1 : 0, ordered_weight };
 }
 
 export async function set_cargo(params: Params): Promise<Result> {
@@ -101,14 +120,14 @@ export async function get_cargos(params: Params): Promise<Result> {
 
   const data = [];
   for (const c of cargos) {
-    const tot = await prisma.cargoTotal.findUnique({ where: { cargoId: c.id } });
     const route = await readRoute(c.id);
     const moves = await prisma.transportation.findMany({
-      where: { cargo: c.id, status: { gte: 11, lte: 20 } },
+      where: { cargo: c.id },
       orderBy: { period: "desc" },
     });
     const invoices = [];
     for (const inv of moves) {
+      if ((inv.status ?? 0) < 11 || (inv.status ?? 0) > 20) continue;
       const tr = await prisma.transport.findUnique({ where: { id: inv.transport } });
       const carrier = await prisma.user.findUnique({ where: { id: inv.client } });
       const rating = await prisma.userRating.findUnique({ where: { userId: inv.client } });
@@ -129,7 +148,7 @@ export async function get_cargos(params: Params): Promise<Result> {
         requires_action: status % 2 === 1 ? 1 : 0,
       });
     }
-    const st = cargoStatus(tot);
+    const st = cargoStatus(moves);
     data.push({
       guid: c.id,
       name: c.name,
@@ -139,7 +158,7 @@ export async function get_cargos(params: Params): Promise<Result> {
       phone: c.contactPhone ?? "",
       face: c.contactName ?? "",
       weight: n(c.weight),
-      ordered_weight: tot ? n(tot.orderedWeight) : 0,
+      ordered_weight: st.ordered_weight,
       volume: n(c.volume),
       price: n(c.price),
       cost: n(c.cost),
