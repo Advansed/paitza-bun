@@ -1,4 +1,4 @@
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutBucketCorsCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 export const FOTOS_BUCKET = "kz-files";
@@ -110,7 +110,27 @@ export function decodeBase64File(input: string, fallbackMime = "application/octe
   return { buffer, mimeType };
 }
 
-export async function presignPut(bucket: string, key: string, expiresIn = 60) {
+export async function ensureBucketCors() {
+  assertCredentials();
+  await client().send(new PutBucketCorsCommand({
+    Bucket: FOTOS_BUCKET,
+    CORSConfiguration: {
+      CORSRules: [{
+        AllowedOrigins: [
+          "http://localhost:8100",
+          "http://127.0.0.1:8100",
+          "https://paitza.com",
+        ],
+        AllowedMethods: ["PUT", "GET", "HEAD"],
+        AllowedHeaders: ["*"],
+        ExposeHeaders: ["ETag"],
+        MaxAgeSeconds: 3000,
+      }],
+    },
+  }));
+}
+
+export async function presignPut(bucket: string, key: string, expiresIn = 300) {
   assertCredentials();
   const command = new PutObjectCommand({ Bucket: bucket, Key: key, ContentType: "" });
   return getSignedUrl(client(), command, {
