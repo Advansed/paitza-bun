@@ -151,7 +151,13 @@ export async function set_offer(params: Params): Promise<Result> {
         },
       });
     }
-    return ok({ message: "Предложение принято" });
+    const cargoRow = await prisma.cargo.findUnique({ where: { id: cargo } });
+    return ok({
+      message: "Предложение принято",
+      customer: cargoRow?.client ?? null,
+      carrier: user.id,
+      driver: assigned,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail(`Ошибка сервера: ${message.replace(/"/g, '\\"')}`);
@@ -164,9 +170,17 @@ export async function set_status(params: Params): Promise<Result> {
   const guid = asUuid(params.guid);
   const status = params.status == null ? null : Number(params.status);
   if (!guid || status == null) return fail("Ошибка сервера: параметры не заданы");
+  const move = await prisma.transportation.findUnique({ where: { id: guid } });
+  if (!move) return fail("Ошибка сервера: параметры не заданы");
+  const cargoRow = move.cargo ? await prisma.cargo.findUnique({ where: { id: move.cargo } }) : null;
   try {
     await prisma.transportation.update({ where: { id: guid }, data: { status } });
-    return ok({ message: "Предложение принято" });
+    return ok({
+      message: "Предложение принято",
+      customer: cargoRow?.client ?? null,
+      carrier: move.client,
+      driver: move.driverId,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail(`Ошибка сервера: ${message}`);
@@ -184,9 +198,15 @@ export async function del_offer(params: Params): Promise<Result> {
   if ((offer.status ?? 0) > 11) {
     return fail("Невозможно отозвать предложение: заказ уже в работе или подтвержден");
   }
+  const cargoRow = offer.cargo ? await prisma.cargo.findUnique({ where: { id: offer.cargo } }) : null;
   try {
     await prisma.transportation.delete({ where: { id: offerId } });
-    return ok({ message: "Предложение успешно отозвано водителем" });
+    return ok({
+      message: "Предложение успешно отозвано водителем",
+      customer: cargoRow?.client ?? null,
+      carrier: offer.client,
+      driver: offer.driverId,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail(`Ошибка отзыва предложения: ${message.replace(/"/g, '\\"')}`);

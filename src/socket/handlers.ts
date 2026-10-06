@@ -26,18 +26,23 @@ const method                                        = async (socket: AppSocket, 
   }
 }
 
-const notifyOpponent                                = (socket: AppSocket, recipientId: unknown, extra: Record<string, unknown>) => {
-  if (!recipientId) return;
-  const payload = {
-    cargo: extra.cargo,
-    status: extra.status,
-    event: extra.event,
-    from: socket.userId,
-    timestamp: new Date().toISOString(),
-  };
-  for (const opponent of sockets.findSockets(String(recipientId))) {
-    opponent.emit("cargo_status", payload);
+const emitList                                      = async (userId: string, event: "get_cargos" | "get_works") => {
+  const group = sockets.findSockets(userId).filter((s) => s.connected && s.userToken);
+  const token = group[0]?.userToken;
+  if (!token) return;
+  const data = await call(event, { token });
+  for (const socket of group) {
+    if (socket.connected) socket.emit(event, data);
   }
+}
+
+const refreshParties                                = async (result: Result) => {
+  const customer = typeof result.customer === "string" ? result.customer : "";
+  const drivers = [result.carrier, result.driver].filter((id): id is string => typeof id === "string" && id.length > 0);
+  const jobs: Promise<void>[] = [];
+  if (customer) jobs.push(emitList(customer, "get_cargos"));
+  for (const id of new Set(drivers)) jobs.push(emitList(id, "get_works"));
+  await Promise.all(jobs);
 }
 
 const refreshOnlineDriversWorks                     = async () => {
@@ -178,11 +183,11 @@ export const attachSockets                          = (io: Server) => {
     });
     on("set_inv", async (data) => {
       const result = await method(socket, "set_inv", data);
-      if (result.success) notifyOpponent(socket, data.recipient, { cargo: data.cargo, event: "set_inv" });
+      if (result.success) await refreshParties(result);
     });
     on("cancel_offer", async (data) => {
       const result = await method(socket, "del_offer", data);
-      if (result.success) notifyOpponent(socket, data.recipient, { cargo: data.cargo, event: "del_offer" });
+      if (result.success) await refreshParties(result);
     });
 
     on("get_works", (data) => method(socket, "get_works", data));
@@ -190,13 +195,7 @@ export const attachSockets                          = (io: Server) => {
     for (const event of ["set_offer", "del_offer", "set_status"]) {
       on(event, async (data) => {
         const result = await method(socket, event, data);
-        if (!result.success) return;
-        const row = (result.data ?? {}) as Record<string, unknown>;
-        notifyOpponent(socket, data.recipient || result.recipient || row.recipient, {
-          cargo: data.cargo || result.cargo || row.cargo,
-          status: data.status || result.status || row.status,
-          event,
-        });
+        if (result.success) await refreshParties(result);
       });
     }
 

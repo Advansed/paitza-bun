@@ -346,7 +346,12 @@ export async function set_inv(params: Params): Promise<Result> {
         await create_deal_close(params, tx);
       }
     });
-    return ok({ message: "Статус установлен" });
+    return ok({
+      message: "Статус установлен",
+      customer: cargo?.client ?? null,
+      carrier: move.client,
+      driver: move.driverId,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return fail(`Ошибка: ${message.replace(/"/g, '\\"')}`);
