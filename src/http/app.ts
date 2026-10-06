@@ -167,6 +167,26 @@ export function createApp() {
 
   app.get("/api/upload_url", async (c) => signFile(c, "upload"));
   app.get("/api/signed_url", async (c) => signFile(c, "read"));
+  app.get("/api/media/:bucket/*", async (c) => {
+    const user = await userByToken(c.req.query("token"));
+    if (!user) return c.json({ error: "Неверный токен" }, 401);
+    const bucket = c.req.param("bucket");
+    let key = "";
+    try {
+      key = decodeURIComponent(c.req.param("*") ?? "");
+    } catch {
+      return c.json({ error: "Недопустимый ключ" }, 400);
+    }
+    if (!key || key.split("/").includes("..")) return c.json({ error: "Недопустимый ключ" }, 400);
+    try {
+      const { signed_url } = await signedUrl(bucket, key);
+      const url = new URL(signed_url);
+      c.header("X-Accel-Redirect", `/internal-s3${url.pathname}${url.search}`);
+      return c.body(null, 200);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Ошибка" }, 400);
+    }
+  });
 
   app.post("/api/auth/send-delete-code", (c) => c.json({
     success: false,
