@@ -9,6 +9,7 @@
     "noEmit":                                true,
     "esModuleInterop":                       true,
     "forceConsistentCasingInFileNames":      true,
+    "noImplicitAny":                         false,
     "resolveJsonModule":                     true
   },
   "include": ["src/**/*.ts"]
