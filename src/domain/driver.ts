@@ -31,20 +31,37 @@ export async function get_works(params: Params): Promise<Result> {
     },
   });
 
+  const cargoIds = [...new Set(rows.map((row) => row.cargo).filter((id): id is string => !!id))];
+  const taken = cargoIds.length
+    ? await prisma.transportation.groupBy({
+        by: ["cargo"],
+        where: { cargo: { in: cargoIds }, status: { gte: 11, lte: 20 } },
+        _sum: { weight: true },
+      })
+    : [];
+  const orderedByCargo = new Map(taken.map((row) => [row.cargo, n(row._sum.weight)]));
+  const claimed = new Set(
+    rows
+      .filter((row) => {
+        const status = row.status ?? 0;
+        return !!row.cargo && status >= 11 && status <= 21 && (row.client === user.id || row.driverId === user.id);
+      })
+      .map((row) => row.cargo as string),
+  );
+  const publishedAt = new Map<string, Date>();
+  for (const row of rows) {
+    if (row.status === 10 && row.cargo && !publishedAt.has(row.cargo)) publishedAt.set(row.cargo, row.period);
+  }
+
   const data = [];
   for (const tr of rows) {
     if (!tr.cargo) continue;
     const cargo = await prisma.cargo.findUnique({ where: { id: tr.cargo } });
     if (!cargo) continue;
-    const tot = await prisma.cargoTotal.findUnique({ where: { cargoId: cargo.id } });
-    const ordered = tot ? n(tot.orderedWeight) : 0;
+    const ordered = orderedByCargo.get(cargo.id) ?? 0;
     const cargoWeight = n(cargo.weight);
-    if (tr.status === 10 && !(cargoWeight > ordered)) continue;
-    if (tr.status === 10) {
-      // публичная биржа видна всем, условие веса уже проверено
-    } else if (tr.client !== user.id && tr.driverId !== user.id) {
-      continue;
-    }
+    if (tr.status === 10 && (!(cargoWeight > ordered) || claimed.has(cargo.id))) continue;
+    if (tr.status !== 10 && tr.client !== user.id && tr.driverId !== user.id) continue;
 
     const customer = cargo.client ? await prisma.user.findUnique({ where: { id: cargo.client } }) : null;
     const company = customer
@@ -63,7 +80,7 @@ export async function get_works(params: Params): Promise<Result> {
       recipient: cargo.client,
       name: cargo.name,
       client: customer?.name ?? null,
-      publish_date: tot?.publishDate ?? null,
+      publish_date: publishedAt.get(cargo.id) ?? null,
       company: company
         ? {
             id: company.id,
