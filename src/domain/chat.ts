@@ -313,7 +313,6 @@ export async function create_contract(params: Params): Promise<Result> {
     await prisma.$transaction(async (tx) => {
       await tx.agreement.create({
         data: {
-          id: agreementId,
           createdDate: now,
           status: 0,
           terms: null,
