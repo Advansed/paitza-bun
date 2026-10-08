@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { fail, n, ok, type Result } from "../lib/result";
 import type { Db } from "../lib/user";
@@ -14,11 +15,55 @@ export async function ownerCompany(userId: string, db: Db = prisma) {
 
 /** Кошельки, которые должны быть видны пользователю: все его организации и старые строки на id пользователя. */
 export async function walletIds(userId: string, db: Db = prisma): Promise<string[]> {
-  const companies = await db.company.findMany({
-    where: { client: userId },
-    select: { id: true },
-  });
-  return [...new Set([userId, ...companies.map((company) => company.id)])];
+  const key = userId.toUpperCase();
+  const companies = await db.$queryRaw<Array<{ id: string }>>`
+    SELECT id
+    FROM t_company
+    WHERE UPPER(client) = ${key}
+  `;
+  return [...new Set([key, userId, ...companies.map((company) => company.id.toUpperCase())])];
+}
+
+export type KassaMove = {
+  id: string;
+  category: string;
+  period: Date;
+  flow: boolean;
+  amount: number;
+  currency: string;
+};
+
+function asFlow(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(value)) return value.length > 0 && value[0] !== 0;
+  return n(value) !== 0;
+}
+
+/** Движения кассы по столбцу user, без фильтра Prisma companyId. */
+export async function kassaMoves(ids: string[], db: Db = prisma): Promise<KassaMove[]> {
+  const keys = [...new Set(ids.map((id) => id.toUpperCase()).filter(Boolean))];
+  if (!keys.length) return [];
+  const rows = await db.$queryRaw<Array<{
+    id: string;
+    category: string;
+    period: Date;
+    flow: unknown;
+    amount: unknown;
+    currency: string;
+  }>>`
+    SELECT id, category, period, flow, amount, currency
+    FROM t_kassa
+    WHERE UPPER(\`user\`) IN (${Prisma.join(keys)})
+  `;
+  return rows.map((row) => ({
+    id: row.id,
+    category: row.category,
+    period: row.period instanceof Date ? row.period : new Date(row.period),
+    flow: asFlow(row.flow),
+    amount: n(row.amount),
+    currency: row.currency,
+  }));
 }
 
 /** Пересчёт t_kassa_lefts из движений t_kassa. Заменяет отсутствующий в дампе trig_kassa. */

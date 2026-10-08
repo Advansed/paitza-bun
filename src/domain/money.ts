@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { NO_COMPANY, ownerCompany, recalcLefts, walletIds } from "./kassa";
+import { NO_COMPANY, kassaMoves, ownerCompany, recalcLefts, walletIds } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -506,7 +506,7 @@ export async function get_balance(params: Params): Promise<Result> {
 
   try {
     const ids = await walletIds(user.id);
-    const moves = await prisma.kassa.findMany({ where: { companyId: { in: ids } } });
+    const moves = await kassaMoves(ids);
     if (user.userType === 1) {
       const currency = moves.length
         ? moves.reduce((max, row) => (row.currency > max ? row.currency : max), moves[0]!.currency)
@@ -704,7 +704,7 @@ export async function get_transactions(params: Params): Promise<Result> {
     }> = [];
 
     const ids = await walletIds(user.id);
-    const kassa = await prisma.kassa.findMany({ where: { companyId: { in: ids } } });
+    const kassa = await kassaMoves(ids);
     for (const row of kassa) {
       const cargo = await prisma.cargo.findUnique({ where: { id: row.id } });
       const title = row.category + (cargo?.name == null ? "" : ` по грузу (${cargo.name})`);
