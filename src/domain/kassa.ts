@@ -12,6 +12,15 @@ export async function ownerCompany(userId: string, db: Db = prisma) {
   });
 }
 
+/** Кошельки, которые должны быть видны пользователю: все его организации и старые строки на id пользователя. */
+export async function walletIds(userId: string, db: Db = prisma): Promise<string[]> {
+  const companies = await db.company.findMany({
+    where: { client: userId },
+    select: { id: true },
+  });
+  return [...new Set([userId, ...companies.map((company) => company.id)])];
+}
+
 /** Пересчёт t_kassa_lefts из движений t_kassa. Заменяет отсутствующий в дампе trig_kassa. */
 export async function recalcLefts(db: Db = prisma) {
   await db.kassaLeft.deleteMany();

@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { NO_COMPANY, ownerCompany, recalcLefts } from "./kassa";
+import { NO_COMPANY, ownerCompany, recalcLefts, walletIds } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -505,15 +505,13 @@ export async function get_balance(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
-    const company = await ownerCompany(user.id);
+    const ids = await walletIds(user.id);
+    const moves = await prisma.kassa.findMany({ where: { companyId: { in: ids } } });
     if (user.userType === 1) {
-      const lefts = company
-        ? await prisma.kassaLeft.findMany({ where: { companyId: company.id } })
-        : [];
-      const currency = lefts.length
-        ? lefts.reduce((max, row) => (row.currency > max ? row.currency : max), lefts[0]!.currency)
+      const currency = moves.length
+        ? moves.reduce((max, row) => (row.currency > max ? row.currency : max), moves[0]!.currency)
         : "RUB";
-      const total = lefts.reduce((sum, row) => sum + n(row.amount), 0);
+      const total = moves.reduce((sum, row) => sum + (row.flow ? n(row.amount) : -n(row.amount)), 0);
       const advance1 = await exchangeAdvanceReserve(user.id);
       const deals = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
       let advance2 = 0;
@@ -537,15 +535,11 @@ export async function get_balance(params: Params): Promise<Result> {
       });
     }
 
-    const lefts = company
-      ? await prisma.kassaLeft.findMany({
-          where: { companyId: company.id, NOT: { category: "Аванс" } },
-        })
-      : [];
-    const currency = lefts.length
-      ? lefts.reduce((max, row) => (row.currency > max ? row.currency : max), lefts[0]!.currency)
+    const visible = moves.filter((row) => row.category !== "Аванс");
+    const currency = visible.length
+      ? visible.reduce((max, row) => (row.currency > max ? row.currency : max), visible[0]!.currency)
       : "RUB";
-    const balance = lefts.reduce((sum, row) => sum + n(row.amount), 0);
+    const balance = visible.reduce((sum, row) => sum + (row.flow ? n(row.amount) : -n(row.amount)), 0);
     const deals = await prisma.dealLeft.findMany({ where: { performerId: user.id } });
     let hold = 0;
     let upcoming = 0;
@@ -709,10 +703,8 @@ export async function get_transactions(params: Params): Promise<Result> {
       sort: number;
     }> = [];
 
-    const company = await ownerCompany(user.id);
-    const kassa = company
-      ? await prisma.kassa.findMany({ where: { companyId: company.id } })
-      : [];
+    const ids = await walletIds(user.id);
+    const kassa = await prisma.kassa.findMany({ where: { companyId: { in: ids } } });
     for (const row of kassa) {
       const cargo = await prisma.cargo.findUnique({ where: { id: row.id } });
       const title = row.category + (cargo?.name == null ? "" : ` по грузу (${cargo.name})`);
