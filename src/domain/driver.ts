@@ -13,6 +13,7 @@ import {
   type Result,
 } from "../lib/result";
 import { userByToken } from "../lib/user";
+import { shareAdvance } from "./money";
 
 type Params = Record<string, unknown>;
 
@@ -136,39 +137,66 @@ export async function set_offer(params: Params): Promise<Result> {
     const existing = await prisma.transportation.findFirst({
       where: { client: user.id, cargo, NOT: { status: 10 } },
     });
-    if (existing) {
-      await prisma.transportation.update({
-        where: { id: existing.id },
-        data: {
-          status,
-          period: new Date(),
-          transport,
-          driverId: assigned,
-          weight,
-          volume: 0,
-          cost,
-        },
-      });
-    } else {
-      await prisma.transportation.create({
-        data: {
-          id: uuid(),
-          period: new Date(),
-          lineNumber: 1,
-          isActive: true,
-          client: user.id,
-          driverId: assigned,
-          cargo,
-          transport,
-          weight,
-          volume: 0,
-          cost,
-          status: 11,
-          rating: 0,
-        },
-      });
-    }
-    const cargoRow = await prisma.cargo.findUnique({ where: { id: cargo } });
+    const cargoRow = await prisma.$transaction(async (tx) => {
+      const moveId = existing?.id ?? uuid();
+      if (existing) {
+        await tx.transportation.update({
+          where: { id: existing.id },
+          data: {
+            status,
+            period: new Date(),
+            transport,
+            driverId: assigned,
+            weight,
+            volume: 0,
+            cost,
+          },
+        });
+      } else {
+        await tx.transportation.create({
+          data: {
+            id: moveId,
+            period: new Date(),
+            lineNumber: 1,
+            isActive: true,
+            client: user.id,
+            driverId: assigned,
+            cargo,
+            transport,
+            weight,
+            volume: 0,
+            cost,
+            status: 11,
+            rating: 0,
+          },
+        });
+      }
+      const row = await tx.cargo.findUnique({ where: { id: cargo } });
+      if (row?.client) {
+        const summ = round(cost ?? 0, 2);
+        const advance = shareAdvance(n(row.weight), n(row.advance), weight);
+        const amount = round(Math.max(0, summ - advance), 2);
+        await tx.dealLeft.upsert({
+          where: {
+            dealId_clientId_performerId: {
+              dealId: moveId,
+              clientId: row.client,
+              performerId: user.id,
+            },
+          },
+          create: {
+            dealId: moveId,
+            clientId: row.client,
+            performerId: user.id,
+            summ,
+            advance,
+            amount,
+          },
+          update: { summ, advance, amount },
+        });
+      }
+      return row;
+    });
     return ok({
       message: "Предложение принято",
       customer: cargoRow?.client ?? null,
@@ -217,7 +245,10 @@ export async function del_offer(params: Params): Promise<Result> {
   }
   const cargoRow = offer.cargo ? await prisma.cargo.findUnique({ where: { id: offer.cargo } }) : null;
   try {
-    await prisma.transportation.delete({ where: { id: offerId } });
+    await prisma.$transaction(async (tx) => {
+      await tx.dealLeft.deleteMany({ where: { dealId: offerId } });
+      await tx.transportation.delete({ where: { id: offerId } });
+    });
     return ok({
       message: "Предложение успешно отозвано водителем",
       customer: cargoRow?.client ?? null,

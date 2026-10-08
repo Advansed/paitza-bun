@@ -84,6 +84,7 @@ model Transportation {
   cost       Decimal? @db.Decimal(15, 2)
   status     Int?
   rating     Decimal? @db.Decimal(3, 2)
+  paidAmount Decimal  @default(0) @map("paid_amount") @db.Decimal(15, 2)
   driverId   String?  @map("driver_id") @db.Char(36)
 
   driver     User?      @relation("TransportationDriver", fields: [driverId], references: [id])
@@ -386,25 +387,25 @@ model InvoiceCheck {
 }
 
 model Kassa {
-  id       String   @db.Char(36)
-  category String   @db.VarChar(48)
-  period   DateTime
-  flow     Boolean
-  userId   String   @map("user") @db.Char(36)
-  amount   Decimal  @db.Decimal(15, 2)
-  currency String   @db.VarChar(5)
+  id        String   @db.Char(36)
+  category  String   @db.VarChar(48)
+  period    DateTime
+  flow      Boolean
+  companyId String   @map("user") @db.Char(36)
+  amount    Decimal  @db.Decimal(15, 2)
+  currency  String   @db.VarChar(5)
 
-  @@id([id, category, userId])
+  @@id([id, category, companyId])
   @@map("t_kassa")
 }
 
 model KassaLeft {
-  userId   String  @map("user") @db.Char(36)
-  currency String  @db.VarChar(5)
-  category String  @db.VarChar(48)
-  amount   Decimal @db.Decimal(15, 2)
+  companyId String  @map("user") @db.Char(36)
+  currency  String  @db.VarChar(5)
+  category  String  @db.VarChar(48)
+  amount    Decimal @db.Decimal(15, 2)
 
-  @@id([userId, currency, category])
+  @@id([companyId, currency, category])
   @@map("t_kassa_lefts")
 }
 

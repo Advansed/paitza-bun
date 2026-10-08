@@ -272,6 +272,10 @@ export const attachSockets                          = (io: Server) => {
     for (const event of ["get_balance", "get_transactions", "get_invoices", "get_agreement", "get_seller", "get_invoice"]) {
       on(event, (data) => method(socket, event, data));
     }
+    on("withdraw", async (data) => {
+      const result = await method(socket, "withdraw", data);
+      if (result.success) await method(socket, "get_balance", { token: data.token });
+    });
     on("set_agreement", async (data) => {
       const result = await method(socket, "set_agreement", data);
       if (result.success) socket.emit("agreement_updated", { success: true });

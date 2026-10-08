@@ -226,22 +226,16 @@ async function loadKassa(tx: Tx): Promise<Record<string, unknown>[]> {
   if (!queue.length) return [];
   const actionOf = new Map(queue.map((q) => [q.id.toUpperCase(), q.action]));
   const moves = await tx.kassa.findMany({ where: { id: { in: queue.map((q) => q.id) } } });
-  const userIds = [...new Set(moves.map((m) => m.userId))];
-  const companies = userIds.length
-    ? await tx.company.findMany({ where: { client: { in: userIds } } })
+  const companyIds = [...new Set(moves.map((m) => m.companyId))];
+  const companies = companyIds.length
+    ? await tx.company.findMany({ where: { id: { in: companyIds } } })
     : [];
-  const byClient = new Map<string, typeof companies>();
-  for (const company of companies) {
-    const key = company.client.toUpperCase();
-    const list = byClient.get(key) ?? [];
-    list.push(company);
-    byClient.set(key, list);
-  }
+  const byId = new Map(companies.map((company) => [company.id.toUpperCase(), company]));
 
   const out: Array<{ sort: Date | null; row: Record<string, unknown> }> = [];
   for (const move of moves) {
-    const owners = byClient.get(move.userId.toUpperCase()) ?? [];
-    for (const company of owners) {
+    const company = byId.get(move.companyId.toUpperCase());
+    if (company) {
       const row: Record<string, unknown> = { id: move.id };
       put(row, "period", jsonDate(move.period));
       row.company = company.id;

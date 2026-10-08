@@ -75,6 +75,7 @@ const procedures: Record<string, Proc> = {
   set_user: auth.set_user,
   set_push_token: auth.set_push_token,
   unpublish: cargo.unpublish,
+  withdraw: money.withdraw,
   upd_cargo: sync.upd_cargo,
   upd_company: sync.upd_company,
   upd_company_member: company.upd_company_member,

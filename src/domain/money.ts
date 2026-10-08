@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { recalcLefts } from "./kassa";
+import { NO_COMPANY, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -96,7 +96,7 @@ type KassaIn = {
   id: string;
   category: string;
   flow: boolean;
-  userId: string;
+  companyId: string;
   amount: number;
   currency: string;
 };
@@ -111,13 +111,34 @@ async function insertKassa(db: Db, rows: KassaIn[]) {
         category: row.category,
         period,
         flow: row.flow,
-        userId: row.userId,
+        companyId: row.companyId,
         amount: money(row.amount),
         currency: row.currency,
       },
     });
   }
   await recalcLefts(db);
+}
+
+/** Доля аванса груза, закреплённая за откликом. Пустой вес берёт весь холд. */
+export function shareAdvance(cargoWeight: number, cargoAdvance: number, offerWeight: number | null): number {
+  if (!(cargoWeight > 0) || !(cargoAdvance > 0)) return 0;
+  const weight = offerWeight == null || !(offerWeight > 0) ? cargoWeight : Math.min(offerWeight, cargoWeight);
+  return round((cargoAdvance * weight) / cargoWeight, 2);
+}
+
+async function creditTopups(db: Db, rows: KassaIn[]) {
+  const fresh: KassaIn[] = [];
+  for (const row of rows) {
+    if (!(row.amount > 0)) continue;
+    const existing = await db.kassa.findUnique({
+      where: {
+        id_category_companyId: { id: row.id, category: row.category, companyId: row.companyId },
+      },
+    });
+    if (!existing) fresh.push(row);
+  }
+  await insertKassa(db, fresh);
 }
 
 async function exchangeAdvanceReserve(userId: string, db: Db = prisma): Promise<number> {
@@ -210,47 +231,76 @@ export async function check_payment(_params?: unknown): Promise<Result> {
   });
 }
 
-export async function close_deal_payout(transportationId?: unknown): Promise<Result> {
+export async function close_deal_payout(transportationId?: unknown, db?: Db): Promise<Result> {
   const raw = unwrapId(transportationId);
   const filter = raw === undefined ? undefined : (asUuid(raw) ?? "00000000-0000-0000-0000-000000000000");
-  try {
-    return await prisma.$transaction(async (tx) => {
-      const moves = await tx.transportation.findMany({
-        where: { status: 20, ...(filter ? { id: filter } : {}) },
+  const run = async (tx: Db): Promise<Result> => {
+    const moves = await tx.transportation.findMany({
+      where: { status: 20, ...(filter ? { id: filter } : {}) },
+    });
+    let processed = 0;
+    let wrote = false;
+    for (const move of moves) {
+      const left = await tx.dealLeft.findFirst({
+        where: { dealId: move.id, performerId: move.client },
       });
-      const payouts: KassaIn[] = [];
-      for (const move of moves) {
-        const left = await tx.dealLeft.findFirst({
-          where: { dealId: move.id, performerId: move.client },
-        });
-        const paidRows = await tx.kassa.findMany({
-          where: {
-            id: move.id,
-            userId: move.client,
-            flow: true,
-            category: { in: ["Оплата перевозки", "Оплата за рейс"] },
-          },
-        });
-        const paid = paidRows.reduce((sum, row) => sum + n(row.amount), 0);
-        const delta = round(n(move.cost) - n(left?.amount) - paid, 2);
-        if (delta > 0) {
-          payouts.push({
-            id: move.id,
-            category: "Оплата перевозки",
-            flow: true,
-            userId: move.client,
-            amount: delta,
-            currency: "RUB",
+      if (!left) continue;
+      const company = await ownerCompany(move.client, tx);
+      if (!company) throw new Error(NO_COMPANY);
+      const paidRows = await tx.kassa.findMany({
+        where: {
+          id: move.id,
+          companyId: company.id,
+          flow: true,
+          category: { in: ["Оплата перевозки", "Оплата за рейс"] },
+        },
+      });
+      const paid = round(paidRows.reduce((sum, row) => sum + n(row.amount), 0), 2);
+      const delta = round(n(move.cost) - n(left.amount) - paid, 2);
+      if (delta > 0) {
+        const carrierPay = paidRows.find((row) => row.category === "Оплата перевозки");
+        if (carrierPay) {
+          await tx.kassa.update({
+            where: {
+              id_category_companyId: {
+                id: move.id,
+                category: "Оплата перевозки",
+                companyId: company.id,
+              },
+            },
+            data: { amount: money(n(carrierPay.amount) + delta), period: new Date() },
+          });
+        } else {
+          await tx.kassa.create({
+            data: {
+              id: move.id,
+              category: "Оплата перевозки",
+              period: new Date(),
+              flow: true,
+              companyId: company.id,
+              amount: money(delta),
+              currency: "RUB",
+            },
           });
         }
+        wrote = true;
+        processed += 1;
       }
-      if (!payouts.length) {
-        return ok({ message: "Нет доступных сумм к перечислению", processed: 0 });
-      }
-      await insertKassa(tx, payouts);
-      return ok({ message: "Средства успешно начислены исполнителю", processed: payouts.length });
-    });
+      await tx.$executeRaw`
+        UPDATE t_transportations
+        SET paid_amount = ${round(paid + Math.max(delta, 0), 2)}
+        WHERE id = ${move.id}
+      `;
+    }
+    if (wrote) await recalcLefts(tx);
+    if (!processed) return ok({ message: "Нет доступных сумм к перечислению", processed: 0 });
+    return ok({ message: "Средства успешно начислены исполнителю", processed });
+  };
+  try {
+    if (db) return await run(db);
+    return await prisma.$transaction(run);
   } catch (error) {
+    if (db) throw error;
     return fail(`Ошибка расчета выплат: ${quoted(error)}`);
   }
 }
@@ -271,9 +321,10 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
     const customerId = cargo.client;
     const performerId = move.client;
     const uid = user.id.toUpperCase();
-    if (customerId?.toUpperCase() !== uid && performerId.toUpperCase() !== uid) {
-      return fail("Отказано в доступе к сделке");
-    }
+    const allowed = [customerId, performerId, move.driverId]
+      .filter((id): id is string => !!id)
+      .map((id) => id.toUpperCase());
+    if (!allowed.includes(uid)) return fail("Отказано в доступе к сделке");
 
     const left = await tx.dealLeft.findFirst({ where: { dealId: transportationId } });
     const advanceLeft = left ? n(left.advance) : 0;
@@ -305,7 +356,7 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
         description: "Финализация сделки и зачет накопленного аванса перевозчику",
       },
     });
-    // trig_document_posting_deals: списание аванса (flow = 0), расход заказчика, приход исполнителю.
+    // Списание аванса из регистра. Доплата, которой не было в холде груза, уходит из кошелька заказчика.
     await tx.deal.create({
       data: {
         id: uuid(),
@@ -331,24 +382,22 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
       },
       data: { advance: money(0) },
     });
-    await insertKassa(tx, [
-      {
-        id: transportationId,
-        category: "Оплата перевозки",
-        flow: false,
-        userId: customerId,
-        amount: advanceLeft,
-        currency: "RUB",
-      },
-      {
-        id: transportationId,
-        category: "Оплата перевозки",
-        flow: true,
-        userId: performerId,
-        amount: advanceLeft,
-        currency: "RUB",
-      },
-    ]);
+    const held = shareAdvance(n(cargo.weight), n(cargo.advance), move.weight == null ? null : n(move.weight));
+    const topup = round(Math.max(0, advanceLeft - held), 2);
+    if (topup > 0) {
+      const customerCompany = await ownerCompany(customerId, tx);
+      if (!customerCompany) throw new Error(NO_COMPANY);
+      await insertKassa(tx, [
+        {
+          id: transportationId,
+          category: "Доплата",
+          flow: false,
+          companyId: customerCompany.id,
+          amount: topup,
+          currency: "RUB",
+        },
+      ]);
+    }
     return ok({
       message: "Документ закрытия сделки успешно проведен",
       doc_id: docId,
@@ -456,8 +505,11 @@ export async function get_balance(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
+    const company = await ownerCompany(user.id);
     if (user.userType === 1) {
-      const lefts = await prisma.kassaLeft.findMany({ where: { userId: user.id } });
+      const lefts = company
+        ? await prisma.kassaLeft.findMany({ where: { companyId: company.id } })
+        : [];
       const currency = lefts.length
         ? lefts.reduce((max, row) => (row.currency > max ? row.currency : max), lefts[0]!.currency)
         : "RUB";
@@ -485,9 +537,11 @@ export async function get_balance(params: Params): Promise<Result> {
       });
     }
 
-    const lefts = await prisma.kassaLeft.findMany({
-      where: { userId: user.id, NOT: { category: "Аванс" } },
-    });
+    const lefts = company
+      ? await prisma.kassaLeft.findMany({
+          where: { companyId: company.id, NOT: { category: "Аванс" } },
+        })
+      : [];
     const currency = lefts.length
       ? lefts.reduce((max, row) => (row.currency > max ? row.currency : max), lefts[0]!.currency)
       : "RUB";
@@ -655,7 +709,10 @@ export async function get_transactions(params: Params): Promise<Result> {
       sort: number;
     }> = [];
 
-    const kassa = await prisma.kassa.findMany({ where: { userId: user.id } });
+    const company = await ownerCompany(user.id);
+    const kassa = company
+      ? await prisma.kassa.findMany({ where: { companyId: company.id } })
+      : [];
     for (const row of kassa) {
       const cargo = await prisma.cargo.findUnique({ where: { id: row.id } });
       const title = row.category + (cargo?.name == null ? "" : ` по грузу (${cargo.name})`);
@@ -718,8 +775,10 @@ export async function release_hold(transportationId?: unknown): Promise<Result> 
     if (!id) return;
     const move = await tx.transportation.findFirst({ where: { id, status: 20 } });
     if (!move) return;
+    const company = await ownerCompany(move.client, tx);
+    if (!company) return;
     const rows = await tx.kassa.findMany({
-      where: { id, userId: move.client, category: "Аванс" },
+      where: { id, companyId: company.id, category: "Аванс" },
     });
     const held = round(
       rows.reduce((sum, row) => sum + (row.flow ? n(row.amount) : -n(row.amount)), 0),
@@ -727,8 +786,8 @@ export async function release_hold(transportationId?: unknown): Promise<Result> 
     );
     if (held > 0) {
       await insertKassa(tx, [
-        { id, category: "Аванс", flow: false, userId: move.client, amount: held, currency: "RUB" },
-        { id, category: "Оплата за рейс", flow: true, userId: move.client, amount: held, currency: "RUB" },
+        { id, category: "Аванс", flow: false, companyId: company.id, amount: held, currency: "RUB" },
+        { id, category: "Оплата за рейс", flow: true, companyId: company.id, amount: held, currency: "RUB" },
       ]);
     }
   });
@@ -765,7 +824,9 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
   }
 
   const totalPay = payments.reduce((sum, row) => sum + row.amount, 0);
-  const kassa = await prisma.kassaLeft.findMany({ where: { userId: user.id, currency: "RUB" } });
+  const company = await ownerCompany(user.id);
+  if (!company) return fail(NO_COMPANY);
+  const kassa = await prisma.kassaLeft.findMany({ where: { companyId: company.id, currency: "RUB" } });
   const totalKassa = kassa.reduce((sum, row) => sum + n(row.amount), 0);
   const reserved1 = await exchangeAdvanceReserve(user.id);
   const dealLefts = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
@@ -887,12 +948,14 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
           }
           processed += 1;
           if (finalPay) {
+            const performerCompany = await ownerCompany(pay.performer, tx);
+            if (!performerCompany) throw new Error(NO_COMPANY);
             kassaRows.push(
               {
                 id: move.id,
                 category: "Оплата перевозки",
                 flow: false,
-                userId: user.id,
+                companyId: company.id,
                 amount: pay.amount,
                 currency: pay.currency,
               },
@@ -900,7 +963,7 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
                 id: move.id,
                 category: "Оплата перевозки",
                 flow: true,
-                userId: pay.performer,
+                companyId: performerCompany.id,
                 amount: pay.amount,
                 currency: pay.currency,
               },
@@ -1025,7 +1088,34 @@ export async function set_operations(params: unknown): Promise<Result> {
       currency: row.currency,
       docDate: row.docDate,
     }));
-  if (data.length) await prisma.operation.createMany({ data });
+  if (data.length) {
+    await prisma.$transaction(async (tx) => {
+      await tx.operation.createMany({ data });
+      const credits: KassaIn[] = [];
+      for (const op of data) {
+        const amount = n(op.amount);
+        if (!op.inn || op.kpp == null || op.kpp === "" || !(amount > 0)) continue;
+        const companies = await tx.company.findMany({
+          where: { taxNumber: op.inn, taxNumber2: op.kpp },
+          orderBy: { id: "asc" },
+        });
+        const seen = new Set<string>();
+        for (const company of companies) {
+          if (seen.has(company.client)) continue;
+          seen.add(company.client);
+          credits.push({
+            id: op.id,
+            category: "Пополнение",
+            flow: true,
+            companyId: company.id,
+            amount,
+            currency: company.currency?.trim() || "RUB",
+          });
+        }
+      }
+      await creditTopups(tx, credits);
+    });
+  }
   return ok({ message: "success" });
 }
 
@@ -1045,10 +1135,107 @@ export async function set_payment(params: Params): Promise<Result> {
       data.orderStatus = status;
     }
     if (id && (data.paymentId != null || data.formUrl != null || data.orderStatus != null)) {
-      await prisma.payment.updateMany({ where: { id }, data });
+      await prisma.$transaction(async (tx) => {
+        await tx.payment.updateMany({ where: { id }, data });
+        if (data.orderStatus !== 2) return;
+        const payment = await tx.payment.findUnique({ where: { id } });
+        const amount = payment ? n(payment.amount) : 0;
+        if (!payment || payment.posted || !payment.userId || !(amount > 0)) return;
+        const company = await ownerCompany(payment.userId, tx);
+        if (!company) return;
+        await creditTopups(tx, [
+          {
+            id,
+            category: "Пополнение",
+            flow: true,
+            companyId: company.id,
+            amount,
+            currency: company.currency?.trim() || payment.currency?.trim() || "RUB",
+          },
+        ]);
+        await tx.payment.update({ where: { id }, data: { posted: true } });
+      });
     }
     return ok({ message: "Код оплаты записан" });
   } catch (error) {
     return fail(`Ошибка сервера: ${errText(error)}`);
+  }
+}
+
+function payoutRequisites(company: {
+  payoutType: string;
+  countryCode: string;
+  localBankCode: string | null;
+  bankAccount: string | null;
+  cardNumberMask: string | null;
+  phone: string | null;
+  iban: string | null;
+  swiftBic: string | null;
+}): { ok: true; payoutType: string; data: Result } | { ok: false; message: string } {
+  const type = (company.payoutType || "BANK_ACCOUNT").toUpperCase();
+  const country = (company.countryCode || "RU").toUpperCase();
+  if (type === "CARD") {
+    if (!company.cardNumberMask) return { ok: false, message: "Не указана маска карты" };
+    return { ok: true, payoutType: type, data: { card_number_mask: company.cardNumberMask } };
+  }
+  if (type === "SBP") {
+    if (!company.phone) return { ok: false, message: "Не указан телефон для СБП" };
+    return { ok: true, payoutType: type, data: { phone: company.phone } };
+  }
+  if (country !== "RU") {
+    if (!company.iban || !company.swiftBic) return { ok: false, message: "Для вывода нужны IBAN и SWIFT" };
+    return { ok: true, payoutType: type, data: { iban: company.iban, swift_bic: company.swiftBic } };
+  }
+  if (!company.localBankCode || !company.bankAccount) {
+    return { ok: false, message: "Для вывода нужны БИК и расчётный счёт" };
+  }
+  return {
+    ok: true,
+    payoutType: "BANK_ACCOUNT",
+    data: { bank_bik: company.localBankCode, bank_account: company.bankAccount },
+  };
+}
+
+export async function withdraw(params: Params): Promise<Result> {
+  const token = asUuid(params.token);
+  const amount = sqlMoney(params.amount);
+  if (!token) return fail("Токен не указан");
+  if (amount == null || round(amount, 2) <= 0) return fail("Сумма вывода указана некорректно");
+  const user = await prisma.user.findFirst({ where: { token } });
+  if (!user) return fail("Неверный токен");
+  const company = await ownerCompany(user.id);
+  if (!company) return fail(NO_COMPANY);
+  const requisites = payoutRequisites(company);
+  if (!requisites.ok) return fail(requisites.message);
+  const currency = company.currency?.trim() || "RUB";
+  const sum = round(amount, 2);
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const lefts = await tx.kassaLeft.findMany({ where: { companyId: company.id, currency } });
+      const available = round(lefts.reduce((total, row) => total + n(row.amount), 0), 2);
+      if (sum > available) throw new Error("Недостаточно средств для вывода");
+      await insertKassa(tx, [
+        {
+          id: uuid(),
+          category: "Вывод средств",
+          flow: false,
+          companyId: company.id,
+          amount: sum,
+          currency,
+        },
+      ]);
+    });
+    return ok({
+      message: "Заявка на вывод принята",
+      amount: sum,
+      currency,
+      payout_type: requisites.payoutType,
+      requisites: requisites.data,
+    });
+  } catch (error) {
+    const message = errText(error);
+    if (message === "Недостаточно средств для вывода") return fail(message);
+    return fail(`Ошибка вывода средств: ${quoted(error)}`);
   }
 }

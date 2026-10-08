@@ -16,7 +16,7 @@ import {
   type Result,
 } from "../lib/result";
 import { userByToken } from "../lib/user";
-import { recalcLefts, rubBalance } from "./kassa";
+import { NO_COMPANY, ownerCompany, recalcLefts, rubBalance } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -190,11 +190,13 @@ export async function publish(params: Params): Promise<Result> {
 
   const cargo = await prisma.cargo.findUnique({ where: { id: cargoId } });
   if (!cargo) return fail("Ошибка: груз не найден");
+  const company = await ownerCompany(user.id);
+  if (!company) return fail(NO_COMPANY);
   const advance = n(cargo.advance);
   const insurance = n(cargo.insurance);
   const required = advance + insurance;
   if (required > 0) {
-    const balance = await rubBalance(user.id);
+    const balance = await rubBalance(company.id);
     if (balance < required) {
       return fail("Недостаточно средств на балансе для покрытия аванса и страховки");
     }
@@ -210,7 +212,7 @@ export async function publish(params: Params): Promise<Result> {
             category: "Аванс",
             period: new Date(),
             flow: false,
-            userId: user.id,
+            companyId: company.id,
             amount: advance,
             currency: "RUB",
           },
@@ -223,7 +225,7 @@ export async function publish(params: Params): Promise<Result> {
             category: "Страховка",
             period: new Date(),
             flow: false,
-            userId: user.id,
+            companyId: company.id,
             amount: insurance,
             currency: "RUB",
           },
@@ -261,6 +263,8 @@ export async function unpublish(params: Params): Promise<Result> {
   const user = await prisma.user.findFirst({ where: { token } });
   if (!user) return fail("Invalid token");
 
+  const company = await ownerCompany(user.id);
+  if (!company) return fail(NO_COMPANY);
   const rows = await prisma.transportation.findMany({ where: { cargo: cargoId, client: user.id } });
   if (!rows.length) return fail("Публикация не найдена или у вас нет прав на её отмену");
   if (rows.some((r) => (r.status ?? 0) > 10)) {
@@ -269,7 +273,7 @@ export async function unpublish(params: Params): Promise<Result> {
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.kassa.deleteMany({ where: { id: cargoId, userId: user.id } });
+      await tx.kassa.deleteMany({ where: { id: cargoId, companyId: company.id } });
       await tx.transportation.deleteMany({ where: { cargo: cargoId, client: user.id } });
       await recalcLefts(tx);
     });
@@ -342,8 +346,15 @@ export async function set_inv(params: Params): Promise<Result> {
     await prisma.$transaction(async (tx) => {
       await tx.transportation.update({ where: { id: moveId }, data: { status } });
       if (status === 20) {
-        const { create_deal_close } = await import("./money");
-        await create_deal_close(params, tx);
+        const { create_deal_close, close_deal_payout } = await import("./money");
+        const closed = await create_deal_close(params, tx);
+        if (closed.success === false) {
+          throw new Error(String(closed.message ?? "Ошибка финализации сделки"));
+        }
+        const paid = await close_deal_payout(moveId, tx);
+        if (paid.success === false) {
+          throw new Error(String(paid.message ?? "Ошибка расчета выплат"));
+        }
       }
     });
     return ok({
