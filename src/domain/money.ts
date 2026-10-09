@@ -553,6 +553,39 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
       data: { advance: money(0) },
     });
     await postDocument(tx, docId);
+    // Холд публикации уже списал аванс. Оплата перевозки заменяет его, иначе сумма снимается дважды.
+    const holdUser = await walletParty(tx, customerId);
+    const holdRows = await tx.$queryRaw<Array<{ amount: unknown }>>`
+      SELECT amount
+      FROM t_kassa
+      WHERE UPPER(TRIM(id)) = UPPER(TRIM(${cargo.id}))
+        AND category = 'Аванс'
+        AND UPPER(TRIM(\`user\`)) = UPPER(TRIM(${holdUser}))
+        AND flow = 0
+      LIMIT 1
+    `;
+    if (holdRows[0]) {
+      const leftHold = round(n(holdRows[0].amount) - advanceLeft, 2);
+      if (leftHold > 0) {
+        await tx.$executeRaw`
+          UPDATE t_kassa
+          SET amount = ${leftHold}
+          WHERE UPPER(TRIM(id)) = UPPER(TRIM(${cargo.id}))
+            AND category = 'Аванс'
+            AND UPPER(TRIM(\`user\`)) = UPPER(TRIM(${holdUser}))
+            AND flow = 0
+        `;
+      } else {
+        await tx.$executeRaw`
+          DELETE FROM t_kassa
+          WHERE UPPER(TRIM(id)) = UPPER(TRIM(${cargo.id}))
+            AND category = 'Аванс'
+            AND UPPER(TRIM(\`user\`)) = UPPER(TRIM(${holdUser}))
+            AND flow = 0
+        `;
+      }
+      await recalcLefts(tx);
+    }
     return ok({
       message: "Документ закрытия сделки успешно проведен",
       doc_id: docId,
