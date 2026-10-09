@@ -148,9 +148,15 @@ async function exchangeAdvanceReserve(userId: string, db: Db = prisma): Promise<
     const weight = n(cargo.weight);
     const advance = n(cargo.advance);
     if (!(weight > 0) || !(advance > 0)) continue;
-    const tot = await db.cargoTotal.findUnique({ where: { cargoId: cargo.id } });
-    if (!tot || (tot.maxStatus ?? -1) < 10) continue;
-    const ordered = n(tot.orderedWeight);
+    const moves = await db.transportation.findMany({ where: { cargo: cargo.id } });
+    const maxStatus = moves.reduce((max, row) => Math.max(max, row.status ?? -1), -1);
+    if (maxStatus < 10) continue;
+    const ordered = moves
+      .filter((row) => {
+        const status = row.status ?? 0;
+        return status >= 11 && status <= 20;
+      })
+      .reduce((total, row) => total + n(row.weight), 0);
     if (!(weight > ordered)) continue;
     sum += round((advance * (weight - ordered)) / weight, 2);
   }
@@ -517,12 +523,14 @@ export async function get_balance(params: Params): Promise<Result> {
         advance2 += n(row.advance);
         if (n(row.amount) > 0) due += n(row.amount);
       }
+      let available = wallet.balance - (advance1 + advance2);
+      if (available < 0) available = 0;
       return ok({
         data: {
           user_type: 1,
           role_name: "client",
           currency: wallet.currency,
-          balance: round(wallet.balance, 2),
+          balance: round(available, 2),
           advance1: round(advance1, 2),
           advance2: round(advance2, 2),
           due: round(due, 2),
