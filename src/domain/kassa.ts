@@ -57,6 +57,8 @@ export async function kassaBalance(userId: string, excludeAdvance = false, db: D
     ${category}
   `;
   const row = rows[0];
+  console.log("kassaBalance", userId);
+  console.log(rows);
   return {
     currency: row?.currency?.trim() || "RUB",
     balance: n(row?.balance),
