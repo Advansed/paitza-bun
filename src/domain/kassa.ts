@@ -1,4 +1,3 @@
-import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { fail, n, ok, type Result } from "../lib/result";
 import type { Db } from "../lib/user";
@@ -11,17 +10,6 @@ export async function ownerCompany(userId: string, db: Db = prisma) {
     where: { client: userId },
     orderBy: { id: "asc" },
   });
-}
-
-/** Кошельки, которые должны быть видны пользователю: все его организации и старые строки на id пользователя. */
-export async function walletIds(userId: string, db: Db = prisma): Promise<string[]> {
-  const key = userId.toUpperCase();
-  const companies = await db.$queryRaw<Array<{ id: string }>>`
-    SELECT id
-    FROM t_company
-    WHERE UPPER(client) = ${key}
-  `;
-  return [...new Set([key, userId, ...companies.map((company) => company.id.toUpperCase())])];
 }
 
 export type KassaMove = {
@@ -40,10 +28,9 @@ function asFlow(value: unknown): boolean {
   return n(value) !== 0;
 }
 
-/** Движения кассы по столбцу user, без фильтра Prisma companyId. */
-export async function kassaMoves(ids: string[], db: Db = prisma): Promise<KassaMove[]> {
-  const keys = [...new Set(ids.map((id) => id.toUpperCase()).filter(Boolean))];
-  if (!keys.length) return [];
+/** Движения кассы организаций этого пользователя и старые строки на его id. */
+export async function kassaMoves(userId: string, db: Db = prisma): Promise<KassaMove[]> {
+  const key = userId.toUpperCase();
   const rows = await db.$queryRaw<Array<{
     id: string;
     category: string;
@@ -52,9 +39,13 @@ export async function kassaMoves(ids: string[], db: Db = prisma): Promise<KassaM
     amount: unknown;
     currency: string;
   }>>`
-    SELECT id, category, period, flow, amount, currency
-    FROM t_kassa
-    WHERE UPPER(\`user\`) IN (${Prisma.join(keys)})
+    SELECT k.id, k.category, k.period, k.flow, k.amount, k.currency
+    FROM t_kassa k
+    WHERE UPPER(k.\`user\`) IN (
+      SELECT UPPER(id) FROM t_company WHERE UPPER(client) = ${key}
+      UNION
+      SELECT ${key}
+    )
   `;
   return rows.map((row) => ({
     id: row.id,

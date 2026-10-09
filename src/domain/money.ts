@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { NO_COMPANY, kassaMoves, ownerCompany, recalcLefts, walletIds } from "./kassa";
+import { NO_COMPANY, kassaMoves, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -505,8 +505,7 @@ export async function get_balance(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
-    const ids = await walletIds(user.id);
-    const moves = await kassaMoves(ids);
+    const moves = await kassaMoves(user.id);
     if (user.userType === 1) {
       const currency = moves.length
         ? moves.reduce((max, row) => (row.currency > max ? row.currency : max), moves[0]!.currency)
@@ -520,14 +519,12 @@ export async function get_balance(params: Params): Promise<Result> {
         advance2 += n(row.advance);
         if (n(row.amount) > 0) due += n(row.amount);
       }
-      let available = total - (advance1 + advance2);
-      if (available < 0) available = 0;
       return ok({
         data: {
           user_type: 1,
           role_name: "client",
           currency,
-          balance: round(available, 2),
+          balance: round(total, 2),
           advance1: round(advance1, 2),
           advance2: round(advance2, 2),
           due: round(due, 2),
@@ -703,8 +700,7 @@ export async function get_transactions(params: Params): Promise<Result> {
       sort: number;
     }> = [];
 
-    const ids = await walletIds(user.id);
-    const kassa = await kassaMoves(ids);
+    const kassa = await kassaMoves(user.id);
     for (const row of kassa) {
       const cargo = await prisma.cargo.findUnique({ where: { id: row.id } });
       const title = row.category + (cargo?.name == null ? "" : ` по грузу (${cargo.name})`);
