@@ -506,7 +506,6 @@ export async function get_balance(params: Params): Promise<Result> {
 
   try {
 
-    console.log("get_balance", user.id);
     
     if (user.userType === 1) {
       const wallet = await kassaBalance(user.id);
