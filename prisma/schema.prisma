@@ -84,7 +84,6 @@ model Transportation {
   cost       Decimal? @db.Decimal(15, 2)
   status     Int?
   rating     Decimal? @db.Decimal(3, 2)
-  paidAmount Decimal  @default(0) @map("paid_amount") @db.Decimal(15, 2)
   driverId   String?  @map("driver_id") @db.Char(36)
 
   driver     User?      @relation("TransportationDriver", fields: [driverId], references: [id])

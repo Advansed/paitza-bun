@@ -477,11 +477,6 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
         wrote = true;
         processed += 1;
       }
-      await tx.$executeRaw`
-        UPDATE t_transportations
-        SET paid_amount = ${round(paid + Math.max(delta, 0), 2)}
-        WHERE id = ${move.id}
-      `;
     }
     if (wrote) await recalcLefts(tx);
     if (!processed) return ok({ message: "Нет доступных сумм к перечислению", processed: 0 });
