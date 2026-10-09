@@ -167,11 +167,17 @@ export const attachSockets                          = (io: Server) => {
     });
     on("publish_cargo", async (data) => {
       const result = await method(socket, "publish", data);
-      if (result.success) await refreshOnlineDriversWorks();
+      if (result.success) {
+        await refreshOnlineDriversWorks();
+        await method(socket, "get_balance", { token: data.token });
+      }
     });
     on("unpublish_cargo", async (data) => {
       const result = await method(socket, "unpublish", data);
-      if (result.success) await refreshOnlineDriversWorks();
+      if (result.success) {
+        await refreshOnlineDriversWorks();
+        await method(socket, "get_balance", { token: data.token });
+      }
     });
     on("set_document", async (data) => {
       const result = await method(socket, "set_document", data);

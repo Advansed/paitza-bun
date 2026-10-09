@@ -16,7 +16,7 @@ import {
   type Result,
 } from "../lib/result";
 import { userByToken } from "../lib/user";
-import { NO_COMPANY, ownerCompany, recalcLefts, rubBalance } from "./kassa";
+import { NO_COMPANY, kassaBalance, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -196,8 +196,8 @@ export async function publish(params: Params): Promise<Result> {
   const insurance = n(cargo.insurance);
   const required = advance + insurance;
   if (required > 0) {
-    const balance = await rubBalance(company.id);
-    if (balance < required) {
+    const wallet = await kassaBalance(user.id);
+    if (wallet.balance < required) {
       return fail("Недостаточно средств на балансе для покрытия аванса и страховки");
     }
   }
@@ -206,30 +206,16 @@ export async function publish(params: Params): Promise<Result> {
   try {
     await prisma.$transaction(async (tx) => {
       if (advance > 0) {
-        await tx.kassa.create({
-          data: {
-            id: cargoId,
-            category: "Аванс",
-            period: new Date(),
-            flow: false,
-            companyId: company.id,
-            amount: advance,
-            currency: "RUB",
-          },
-        });
+        await tx.$executeRaw`
+          INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
+          VALUES (${cargoId}, 'Аванс', NOW(), 0, ${company.id}, ${advance}, 'RUB')
+        `;
       }
       if (insurance > 0) {
-        await tx.kassa.create({
-          data: {
-            id: cargoId,
-            category: "Страховка",
-            period: new Date(),
-            flow: false,
-            companyId: company.id,
-            amount: insurance,
-            currency: "RUB",
-          },
-        });
+        await tx.$executeRaw`
+          INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
+          VALUES (${cargoId}, 'Страховка', NOW(), 0, ${company.id}, ${insurance}, 'RUB')
+        `;
       }
       await tx.transportation.create({
         data: {
