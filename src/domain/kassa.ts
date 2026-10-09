@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
 import { fail, n, ok, type Result } from "../lib/result";
 import type { Db } from "../lib/user";
@@ -28,9 +29,42 @@ function asFlow(value: unknown): boolean {
   return n(value) !== 0;
 }
 
+function walletWhere(userId: string) {
+  return Prisma.sql`
+    (
+      EXISTS (
+        SELECT 1
+        FROM t_company c
+        WHERE c.client = ${userId}
+          AND UPPER(TRIM(c.id)) = UPPER(TRIM(k.\`user\`))
+      )
+      OR UPPER(TRIM(k.\`user\`)) = UPPER(TRIM(${userId}))
+    )
+  `;
+}
+
+/** Сумма кассы: приход минус расход. Для исполнителя категория «Аванс» не входит. */
+export async function kassaBalance(userId: string, excludeAdvance = false, db: Db = prisma): Promise<{ currency: string; balance: number }> {
+  const category = excludeAdvance
+    ? Prisma.sql`AND k.category <> 'Аванс'`
+    : Prisma.empty;
+  const rows = await db.$queryRaw<Array<{ currency: string | null; balance: unknown }>>`
+    SELECT
+      COALESCE(MAX(k.currency), 'RUB') AS currency,
+      COALESCE(SUM(IF(k.flow <> 0, k.amount, -k.amount)), 0) AS balance
+    FROM t_kassa k
+    WHERE ${walletWhere(userId)}
+    ${category}
+  `;
+  const row = rows[0];
+  return {
+    currency: row?.currency?.trim() || "RUB",
+    balance: n(row?.balance),
+  };
+}
+
 /** Движения кассы организаций этого пользователя и старые строки на его id. */
 export async function kassaMoves(userId: string, db: Db = prisma): Promise<KassaMove[]> {
-  const key = userId.toUpperCase();
   const rows = await db.$queryRaw<Array<{
     id: string;
     category: string;
@@ -41,11 +75,7 @@ export async function kassaMoves(userId: string, db: Db = prisma): Promise<Kassa
   }>>`
     SELECT k.id, k.category, k.period, k.flow, k.amount, k.currency
     FROM t_kassa k
-    WHERE UPPER(k.\`user\`) IN (
-      SELECT UPPER(id) FROM t_company WHERE UPPER(client) = ${key}
-      UNION
-      SELECT ${key}
-    )
+    WHERE ${walletWhere(userId)}
   `;
   return rows.map((row) => ({
     id: row.id,

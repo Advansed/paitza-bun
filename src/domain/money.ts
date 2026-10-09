@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { NO_COMPANY, kassaMoves, ownerCompany, recalcLefts } from "./kassa";
+import { NO_COMPANY, kassaBalance, kassaMoves, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -505,12 +505,8 @@ export async function get_balance(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
-    const moves = await kassaMoves(user.id);
     if (user.userType === 1) {
-      const currency = moves.length
-        ? moves.reduce((max, row) => (row.currency > max ? row.currency : max), moves[0]!.currency)
-        : "RUB";
-      const total = moves.reduce((sum, row) => sum + (row.flow ? n(row.amount) : -n(row.amount)), 0);
+      const wallet = await kassaBalance(user.id);
       const advance1 = await exchangeAdvanceReserve(user.id);
       const deals = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
       let advance2 = 0;
@@ -523,8 +519,8 @@ export async function get_balance(params: Params): Promise<Result> {
         data: {
           user_type: 1,
           role_name: "client",
-          currency,
-          balance: round(total, 2),
+          currency: wallet.currency,
+          balance: round(wallet.balance, 2),
           advance1: round(advance1, 2),
           advance2: round(advance2, 2),
           due: round(due, 2),
@@ -532,11 +528,7 @@ export async function get_balance(params: Params): Promise<Result> {
       });
     }
 
-    const visible = moves.filter((row) => row.category !== "Аванс");
-    const currency = visible.length
-      ? visible.reduce((max, row) => (row.currency > max ? row.currency : max), visible[0]!.currency)
-      : "RUB";
-    const balance = visible.reduce((sum, row) => sum + (row.flow ? n(row.amount) : -n(row.amount)), 0);
+    const wallet = await kassaBalance(user.id, true);
     const deals = await prisma.dealLeft.findMany({ where: { performerId: user.id } });
     let hold = 0;
     let upcoming = 0;
@@ -557,8 +549,8 @@ export async function get_balance(params: Params): Promise<Result> {
       data: {
         user_type: 0,
         role_name: "driver",
-        currency,
-        balance: round(balance, 2),
+        currency: wallet.currency,
+        balance: round(wallet.balance, 2),
         hold_advance: round(hold, 2),
         upcoming_income: round(upcoming, 2),
         month_income: round(month, 2),
