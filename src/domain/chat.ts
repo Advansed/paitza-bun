@@ -1,8 +1,8 @@
 import { prisma } from "../db";
 import { contractDocument } from "../lib/contract";
 import { readRoute } from "../lib/route";
-import { asUuid, fail, n, ok, uuid, type Result } from "../lib/result";
-import { userByToken } from "../lib/user";
+import { asUuid, fail, n, ok, round, uuid, type Result } from "../lib/result";
+import { userByToken, type Db } from "../lib/user";
 
 type Params = Record<string, unknown>;
 
@@ -14,6 +14,54 @@ function sqlMessage(error: unknown): string {
 function textOrNull(value: unknown): string | null {
   if (value == null) return null;
   return String(value);
+}
+
+function contractAdvance(cargoWeight: number, cargoAdvance: number, moveWeight: number): number {
+  if (cargoWeight > 0 && moveWeight > 0) {
+    return round(cargoAdvance * (moveWeight / cargoWeight), 2);
+  }
+  return round(cargoAdvance, 2);
+}
+
+/** trig_agreements_sync_document: обе подписи и активный договор дают один DEAL_CREATE. */
+async function syncAgreementDocument(db: Db, agreementId: string) {
+  const agreement = await db.agreement.findUnique({ where: { id: agreementId } });
+  if (!agreement) return;
+  const signed = agreement.clientSign != null && agreement.driverSign != null && agreement.isActive;
+  if (!signed) {
+    await db.document.deleteMany({ where: { dealId: agreementId, docType: "DEAL_CREATE" } });
+    return;
+  }
+  const move = await db.transportation.findUnique({ where: { id: agreementId } });
+  const cargo = await db.cargo.findUnique({ where: { id: agreement.cargoId } });
+  if (!move || !cargo) return;
+  const amount = contractAdvance(n(cargo.weight), n(cargo.advance), n(move.weight));
+  const existing = await db.document.findFirst({
+    where: { dealId: agreementId, docType: "DEAL_CREATE" },
+  });
+  const data = {
+    sender: agreement.clientId,
+    recipient: agreement.driverId,
+    amount,
+    docDate: agreement.driverSignedDate ?? new Date(),
+    posted: true,
+    description: "Заключение договора перевозки",
+  };
+  if (existing) {
+    await db.document.update({ where: { id: existing.id }, data });
+    return;
+  }
+  await db.document.create({
+    data: {
+      id: uuid(),
+      docNumber: `AGR-${agreementId.slice(0, 8)}`,
+      docType: "DEAL_CREATE",
+      dealId: agreementId,
+      currency: "RUB",
+      category: "Аванс договора",
+      ...data,
+    },
+  });
 }
 
 function asInt(value: unknown): number | null {
@@ -328,6 +376,7 @@ export async function create_contract(params: Params): Promise<Result> {
           driver: { connect: { id: carrierId } },
         },
       });
+      await syncAgreementDocument(tx, agreementId);
     });
     return ok({ message: "Соглашение создано" });
   } catch (error) {
@@ -358,6 +407,7 @@ export async function set_contract(params: Params): Promise<Result> {
           driverSignedDate: new Date(),
         },
       });
+      await syncAgreementDocument(tx, agreementId);
     });
     return ok({ message: "Соглашение подписано" });
   } catch (error) {
