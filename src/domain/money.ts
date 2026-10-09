@@ -120,6 +120,181 @@ async function insertKassa(db: Db, rows: KassaIn[]) {
   await recalcLefts(db);
 }
 
+/** Кошелёк стороны: организация, если она есть, иначе id пользователя. */
+async function walletParty(db: Db, userId: string): Promise<string> {
+  const company = await ownerCompany(userId, db);
+  return company?.id ?? userId;
+}
+
+async function insertKassaUser(
+  db: Db,
+  row: { id: string; category: string; period: Date; flow: boolean; userId: string; amount: number; currency: string },
+) {
+  if (!(row.amount > 0)) return;
+  await db.$executeRaw`
+    INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
+    VALUES (${row.id}, ${row.category}, ${row.period}, ${row.flow ? 1 : 0}, ${row.userId}, ${row.amount}, ${row.currency})
+  `;
+}
+
+async function deleteDocumentKassa(db: Db, docId: string) {
+  await db.$executeRaw`DELETE FROM t_kassa WHERE id = ${docId}`;
+}
+
+/** ISNULL(t.cost, ISNULL(c.price, 0)) при обязательных перевозке и грузе. */
+async function dealBasis(db: Db, dealId: string): Promise<number | null> {
+  const move = await db.transportation.findUnique({ where: { id: dealId } });
+  if (!move?.cargo) return null;
+  const cargo = await db.cargo.findUnique({ where: { id: move.cargo } });
+  if (!cargo) return null;
+  if (move.cost != null) return n(move.cost);
+  return cargo.price != null ? n(cargo.price) : 0;
+}
+
+async function serviceFee(db: Db, summ: number, recipientId: string): Promise<number> {
+  const user = await db.user.findUnique({ where: { id: recipientId }, select: { tax: true } });
+  if (!user) return 0;
+  const tax = user.tax ?? 7;
+  return round(summ * (tax / 100), 2);
+}
+
+async function writeDeal(
+  db: Db,
+  doc: { id: string; docDate: Date; dealId: string; sender: string; recipient: string },
+  row: { advance: number; summ: number; debt: number; flow: boolean },
+) {
+  await db.deal.create({
+    data: {
+      id: uuid(),
+      period: doc.docDate,
+      recorderType: "DOCUMENT",
+      recorderId: doc.id,
+      dealId: doc.dealId,
+      clientId: doc.sender,
+      performerId: doc.recipient,
+      advance: money(row.advance),
+      summ: money(row.summ),
+      debt: money(row.debt),
+      flow: row.flow,
+    },
+  });
+}
+
+/** Снятие движений документа: t_deals по recorder_id и t_kassa по id документа. */
+export async function unpostDocument(db: Db, docId: string) {
+  await db.deal.deleteMany({ where: { recorderId: docId } });
+  await deleteDocumentKassa(db, docId);
+  await recalcLefts(db);
+}
+
+/** trig_document_posting_deals: проведение t_document в регистр сделок и кассу. */
+export async function postDocument(db: Db, docId: string) {
+  const doc = await db.document.findUnique({ where: { id: docId } });
+  if (!doc) return;
+  if (!doc.posted) {
+    await unpostDocument(db, docId);
+    return;
+  }
+
+  await db.deal.deleteMany({ where: { recorderId: doc.id } });
+  if (doc.docType === "DEAL_CREATE" || doc.docType === "DEAL_CLOSE" || doc.docType === "DEAL_PAYMENT_CLOSE") {
+    await deleteDocumentKassa(db, doc.id);
+  }
+
+  const amount = n(doc.amount);
+  const dealId = doc.dealId;
+  if (doc.docType === "DEAL_CREATE" && dealId) {
+    const summ = await dealBasis(db, dealId);
+    if (summ != null) {
+      await writeDeal(db, { ...doc, dealId }, { advance: amount, summ, debt: summ - amount, flow: true });
+      const fee = await serviceFee(db, summ, doc.recipient);
+      if (fee > 0) {
+        await insertKassaUser(db, {
+          id: doc.id,
+          category: "Резерв комиссии",
+          period: doc.docDate,
+          flow: false,
+          userId: await walletParty(db, doc.recipient),
+          amount: fee,
+          currency: doc.currency,
+        });
+      }
+    }
+  } else if (doc.docType === "DEAL_PAYMENT" && dealId) {
+    await writeDeal(db, { ...doc, dealId }, { advance: -amount, summ: 0, debt: amount, flow: false });
+  } else if (doc.docType === "DEAL_CLOSE" && dealId) {
+    await writeDeal(db, { ...doc, dealId }, { advance: amount, summ: amount, debt: 0, flow: false });
+    const senderWallet = await walletParty(db, doc.sender);
+    const recipientWallet = await walletParty(db, doc.recipient);
+    if (amount > 0) {
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Оплата перевозки",
+        period: doc.docDate,
+        flow: false,
+        userId: senderWallet,
+        amount,
+        currency: doc.currency,
+      });
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Оплата перевозки",
+        period: doc.docDate,
+        flow: true,
+        userId: recipientWallet,
+        amount,
+        currency: doc.currency,
+      });
+    }
+    const summ = await dealBasis(db, dealId);
+    const fee = summ == null ? 0 : await serviceFee(db, summ, doc.recipient);
+    if (fee > 0) {
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Резерв комиссии",
+        period: doc.docDate,
+        flow: true,
+        userId: recipientWallet,
+        amount: fee,
+        currency: doc.currency,
+      });
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Комиссия сервиса",
+        period: doc.docDate,
+        flow: false,
+        userId: recipientWallet,
+        amount: fee,
+        currency: doc.currency,
+      });
+    }
+  } else if (doc.docType === "DEAL_PAYMENT_CLOSE" && dealId) {
+    await writeDeal(db, { ...doc, dealId }, { advance: 0, summ: amount, debt: amount, flow: false });
+    if (amount > 0) {
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Оплата перевозки",
+        period: doc.docDate,
+        flow: false,
+        userId: await walletParty(db, doc.sender),
+        amount,
+        currency: doc.currency,
+      });
+      await insertKassaUser(db, {
+        id: doc.id,
+        category: "Оплата перевозки",
+        period: doc.docDate,
+        flow: true,
+        userId: await walletParty(db, doc.recipient),
+        amount,
+        currency: doc.currency,
+      });
+    }
+  }
+
+  await recalcLefts(db);
+}
+
 /** Доля аванса груза, закреплённая за откликом. Пустой вес берёт весь холд. */
 export function shareAdvance(cargoWeight: number, cargoAdvance: number, offerWeight: number | null): number {
   if (!(cargoWeight > 0) || !(cargoAdvance > 0)) return 0;
@@ -253,41 +428,51 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
       if (!left) continue;
       const company = await ownerCompany(move.client, tx);
       if (!company) throw new Error(NO_COMPANY);
-      const paidRows = await tx.kassa.findMany({
-        where: {
-          id: move.id,
-          companyId: company.id,
-          flow: true,
-          category: { in: ["Оплата перевозки", "Оплата за рейс"] },
-        },
-      });
-      const paid = round(paidRows.reduce((sum, row) => sum + n(row.amount), 0), 2);
+      const paidRows = await tx.$queryRaw<Array<{ paid: unknown }>>`
+        SELECT COALESCE(SUM(k.amount), 0) AS paid
+        FROM t_kassa k
+        WHERE k.flow <> 0
+          AND k.category IN ('Оплата перевозки', 'Оплата за рейс')
+          AND (
+            UPPER(TRIM(k.\`user\`)) = UPPER(TRIM(${company.id}))
+            OR UPPER(TRIM(k.\`user\`)) = UPPER(TRIM(${move.client}))
+          )
+          AND (
+            k.id = ${move.id}
+            OR EXISTS (
+              SELECT 1
+              FROM t_document d
+              WHERE d.id = k.id
+                AND d.deal_id = ${move.id}
+                AND d.doc_type IN ('DEAL_CLOSE', 'DEAL_PAYMENT_CLOSE')
+            )
+          )
+      `;
+      const paid = round(n(paidRows[0]?.paid), 2);
       const delta = round(n(move.cost) - n(left.amount) - paid, 2);
       if (delta > 0) {
-        const carrierPay = paidRows.find((row) => row.category === "Оплата перевозки");
-        if (carrierPay) {
-          await tx.kassa.update({
-            where: {
-              id_category_companyId: {
-                id: move.id,
-                category: "Оплата перевозки",
-                companyId: company.id,
-              },
-            },
-            data: { amount: money(n(carrierPay.amount) + delta), period: new Date() },
-          });
+        const carrierPay = await tx.$queryRaw<Array<{ amount: unknown }>>`
+          SELECT amount
+          FROM t_kassa
+          WHERE id = ${move.id}
+            AND category = 'Оплата перевозки'
+            AND \`user\` = ${company.id}
+            AND flow <> 0
+          LIMIT 1
+        `;
+        if (carrierPay[0]) {
+          await tx.$executeRaw`
+            UPDATE t_kassa
+            SET amount = ${round(n(carrierPay[0].amount) + delta, 2)}, period = ${new Date()}
+            WHERE id = ${move.id}
+              AND category = 'Оплата перевозки'
+              AND \`user\` = ${company.id}
+          `;
         } else {
-          await tx.kassa.create({
-            data: {
-              id: move.id,
-              category: "Оплата перевозки",
-              period: new Date(),
-              flow: true,
-              companyId: company.id,
-              amount: money(delta),
-              currency: "RUB",
-            },
-          });
+          await tx.$executeRaw`
+            INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
+            VALUES (${move.id}, 'Оплата перевозки', ${new Date()}, 1, ${company.id}, ${delta}, 'RUB')
+          `;
         }
         wrote = true;
         processed += 1;
@@ -362,22 +547,6 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
         description: "Финализация сделки и зачет накопленного аванса перевозчику",
       },
     });
-    // Списание аванса из регистра. Доплата, которой не было в холде груза, уходит из кошелька заказчика.
-    await tx.deal.create({
-      data: {
-        id: uuid(),
-        period: new Date(),
-        recorderType: "DEAL_CLOSE",
-        recorderId: docId,
-        dealId: transportationId,
-        clientId: left.clientId,
-        performerId: left.performerId,
-        advance: money(advanceLeft),
-        summ: money(0),
-        debt: money(0),
-        flow: false,
-      },
-    });
     await tx.dealLeft.update({
       where: {
         dealId_clientId_performerId: {
@@ -388,22 +557,7 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
       },
       data: { advance: money(0) },
     });
-    const held = shareAdvance(n(cargo.weight), n(cargo.advance), move.weight == null ? null : n(move.weight));
-    const topup = round(Math.max(0, advanceLeft - held), 2);
-    if (topup > 0) {
-      const customerCompany = await ownerCompany(customerId, tx);
-      if (!customerCompany) throw new Error(NO_COMPANY);
-      await insertKassa(tx, [
-        {
-          id: transportationId,
-          category: "Доплата",
-          flow: false,
-          companyId: customerCompany.id,
-          amount: topup,
-          currency: "RUB",
-        },
-      ]);
-    }
+    await postDocument(tx, docId);
     return ok({
       message: "Документ закрытия сделки успешно проведен",
       doc_id: docId,
@@ -523,14 +677,12 @@ export async function get_balance(params: Params): Promise<Result> {
         advance2 += n(row.advance);
         if (n(row.amount) > 0) due += n(row.amount);
       }
-      let available = wallet.balance - (advance1 + advance2);
-      if (available < 0) available = 0;
       return ok({
         data: {
           user_type: 1,
           role_name: "client",
           currency: wallet.currency,
-          balance: round(available, 2),
+          balance: round(wallet.balance, 2),
           advance1: round(advance1, 2),
           advance2: round(advance2, 2),
           due: round(due, 2),
@@ -816,8 +968,7 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
   const totalPay = payments.reduce((sum, row) => sum + row.amount, 0);
   const company = await ownerCompany(user.id);
   if (!company) return fail(NO_COMPANY);
-  const kassa = await prisma.kassaLeft.findMany({ where: { companyId: company.id, currency: "RUB" } });
-  const totalKassa = kassa.reduce((sum, row) => sum + n(row.amount), 0);
+  const totalKassa = (await kassaBalance(user.id)).balance;
   const reserved1 = await exchangeAdvanceReserve(user.id);
   const dealLefts = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
   let reserved2 = 0;
@@ -852,7 +1003,6 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
 
   try {
     return await prisma.$transaction(async (tx) => {
-      const kassaRows: KassaIn[] = [];
       let processed = 0;
       for (const pay of payments) {
         const moves = await tx.transportation.findMany({
@@ -867,7 +1017,7 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
               id: docId,
               docNumber: `PAY-${move.id.slice(0, 8)}`,
               docDate: new Date(),
-              docType: "DEAL_PAYMENT_CLOSE",
+              docType: finalPay ? "DEAL_PAYMENT_CLOSE" : "DEAL_PAYMENT",
               dealId: move.id,
               sender: user.id,
               recipient: pay.performer,
@@ -878,38 +1028,6 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
               description: finalPay
                 ? "Окончательный расчет после завершения рейса"
                 : "Доплата аванса до завершения рейса",
-            },
-          });
-          if (!finalPay) {
-            await tx.deal.create({
-              data: {
-                id: uuid(),
-                period: new Date(),
-                recorderType: "DEAL_PAYMENT_CLOSE",
-                recorderId: docId,
-                dealId: move.id,
-                clientId: user.id,
-                performerId: pay.performer,
-                advance: money(pay.amount),
-                summ: money(0),
-                debt: money(0),
-                flow: true,
-              },
-            });
-          }
-          await tx.deal.create({
-            data: {
-              id: uuid(),
-              period: new Date(),
-              recorderType: "DEAL_PAYMENT_CLOSE",
-              recorderId: docId,
-              dealId: move.id,
-              clientId: user.id,
-              performerId: pay.performer,
-              advance: money(0),
-              summ: money(0),
-              debt: money(pay.amount),
-              flow: false,
             },
           });
           const left = await tx.dealLeft.findUnique({
@@ -936,32 +1054,10 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
               },
             });
           }
+          await postDocument(tx, docId);
           processed += 1;
-          if (finalPay) {
-            const performerCompany = await ownerCompany(pay.performer, tx);
-            if (!performerCompany) throw new Error(NO_COMPANY);
-            kassaRows.push(
-              {
-                id: move.id,
-                category: "Оплата перевозки",
-                flow: false,
-                companyId: company.id,
-                amount: pay.amount,
-                currency: pay.currency,
-              },
-              {
-                id: move.id,
-                category: "Оплата перевозки",
-                flow: true,
-                companyId: performerCompany.id,
-                amount: pay.amount,
-                currency: pay.currency,
-              },
-            );
-          }
         }
       }
-      await insertKassa(tx, kassaRows);
       return ok({ message: "Оплата зафиксирована", processed });
     });
   } catch (error) {

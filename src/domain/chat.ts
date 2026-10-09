@@ -3,6 +3,7 @@ import { contractDocument } from "../lib/contract";
 import { readRoute } from "../lib/route";
 import { asUuid, fail, n, ok, round, uuid, type Result } from "../lib/result";
 import { userByToken, type Db } from "../lib/user";
+import { postDocument, unpostDocument } from "./money";
 
 type Params = Record<string, unknown>;
 
@@ -29,6 +30,8 @@ async function syncAgreementDocument(db: Db, agreementId: string) {
   if (!agreement) return;
   const signed = agreement.clientSign != null && agreement.driverSign != null && agreement.isActive;
   if (!signed) {
+    const docs = await db.document.findMany({ where: { dealId: agreementId, docType: "DEAL_CREATE" } });
+    for (const doc of docs) await unpostDocument(db, doc.id);
     await db.document.deleteMany({ where: { dealId: agreementId, docType: "DEAL_CREATE" } });
     return;
   }
@@ -49,11 +52,13 @@ async function syncAgreementDocument(db: Db, agreementId: string) {
   };
   if (existing) {
     await db.document.update({ where: { id: existing.id }, data });
+    await postDocument(db, existing.id);
     return;
   }
+  const docId = uuid();
   await db.document.create({
     data: {
-      id: uuid(),
+      id: docId,
       docNumber: `AGR-${agreementId.slice(0, 8)}`,
       docType: "DEAL_CREATE",
       dealId: agreementId,
@@ -62,6 +67,7 @@ async function syncAgreementDocument(db: Db, agreementId: string) {
       ...data,
     },
   });
+  await postDocument(db, docId);
 }
 
 function asInt(value: unknown): number | null {
