@@ -505,6 +505,9 @@ export async function get_balance(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
+
+    console.log("get_balance", user.id);
+    
     if (user.userType === 1) {
       const wallet = await kassaBalance(user.id);
       const advance1 = await exchangeAdvanceReserve(user.id);
