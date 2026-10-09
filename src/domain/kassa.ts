@@ -91,26 +91,14 @@ export async function kassaMoves(userId: string, db: Db = prisma): Promise<Kassa
 
 /** Пересчёт t_kassa_lefts из движений t_kassa. Заменяет отсутствующий в дампе trig_kassa. */
 export async function recalcLefts(db: Db = prisma) {
-  await db.kassaLeft.deleteMany();
-  const rows = await db.kassa.groupBy({
-    by: ["companyId", "currency", "category"],
-    _sum: { amount: true },
-  });
-  const signed = await db.kassa.findMany({
-    select: { companyId: true, currency: true, category: true, amount: true, flow: true },
-  });
-  const map = new Map<string, { companyId: string; currency: string; category: string; amount: number }>();
-  for (const row of signed) {
-    const key = `${row.companyId}|${row.currency}|${row.category}`;
-    const prev = map.get(key) ?? { companyId: row.companyId, currency: row.currency, category: row.category, amount: 0 };
-    prev.amount += row.flow ? n(row.amount) : -n(row.amount);
-    map.set(key, prev);
-  }
-  void rows;
-  const data = [...map.values()].filter((r) => r.amount !== 0);
-  if (data.length) {
-    await db.kassaLeft.createMany({ data });
-  }
+  await db.$executeRaw`DELETE FROM t_kassa_lefts`;
+  await db.$executeRaw`
+    INSERT INTO t_kassa_lefts (\`user\`, currency, category, amount)
+    SELECT \`user\`, currency, category, SUM(IF(flow <> 0, amount, -amount))
+    FROM t_kassa
+    GROUP BY \`user\`, currency, category
+    HAVING SUM(IF(flow <> 0, amount, -amount)) <> 0
+  `;
 }
 
 export async function recalc_kassa_lefts(): Promise<Result> {

@@ -259,7 +259,10 @@ export async function unpublish(params: Params): Promise<Result> {
 
   try {
     await prisma.$transaction(async (tx) => {
-      await tx.kassa.deleteMany({ where: { id: cargoId, companyId: company.id } });
+      await tx.$executeRaw`
+        DELETE FROM t_kassa
+        WHERE id = ${cargoId} AND \`user\` = ${company.id}
+      `;
       await tx.transportation.deleteMany({ where: { cargo: cargoId, client: user.id } });
       await recalcLefts(tx);
     });
