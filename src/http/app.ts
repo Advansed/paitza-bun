@@ -11,6 +11,7 @@ import {
   resolveImageInput,
   uploadFotos,
 } from "../services/storage";
+import { calculateHaul } from "../pricing/calculate";
 
 const ALLOWED = [
   "http://localhost:8100",
@@ -163,6 +164,13 @@ export function createApp() {
     const user = await userByToken(c.req.query("token"));
     if (!user) return c.json({ success: false, message: "Неверный токен" }, 401);
     return c.json({ success: true, data: user });
+  });
+
+  app.post("/api/pricing/calculate", async (c) => {
+    const body = await c.req.json().catch(() => ({} as Record<string, unknown>));
+    const result = await calculateHaul(body);
+    if (result.status === 200) return c.json({ success: true, data: result.data });
+    return c.json({ success: false, message: result.message }, result.status);
   });
 
   app.get("/api/upload_url", async (c) => signFile(c, "upload"));
