@@ -62,7 +62,6 @@ model Transport {
   vin             String?  @db.NVarChar(17)
   manufactureYear Int?     @map("manufacture_year")
   image           String?  @db.LongText
-  sts             String?  @db.LongText
   experience      Int?
   loadCapacity    Decimal? @map("load_capacity") @db.Decimal(10, 2)
   transportType   String?  @map("transport_type") @db.Char(36)
@@ -70,6 +69,17 @@ model Transport {
   driverFio       String?  @map("driver_fio") @db.VarChar(255)
 
   @@map("t_transport")
+}
+
+model Doc {
+  id          String  @id @db.Char(36)
+  name        String  @db.NVarChar(255)
+  description String? @db.NVarChar(500)
+  url         String  @db.LongText
+  ownerId     String  @map("owner_id") @db.Char(36)
+
+  @@index([ownerId])
+  @@map("t_docs")
 }
 
 model Transportation {

@@ -48,6 +48,28 @@ function jsonDecimal(value: unknown): number | null {
   return Math.round(Number(t) * 100) / 100;
 }
 
+const STS_NAME = "СТС";
+const STS_DESCRIPTION = "Свидетельство о регистрации транспортного средства";
+
+async function saveStsDoc(transportId: string, url: string) {
+  const existingDoc = await prisma.doc.findFirst({
+    where: { ownerId: transportId, name: STS_NAME },
+  });
+  if (existingDoc) {
+    await prisma.doc.update({ where: { id: existingDoc.id }, data: { url } });
+    return;
+  }
+  await prisma.doc.create({
+    data: {
+      id: uuid(),
+      name: STS_NAME,
+      description: STS_DESCRIPTION,
+      url,
+      ownerId: transportId,
+    },
+  });
+}
+
 function stamp(value: Date | null | undefined): string {
   if (!value) return "";
   const p = (x: number) => String(x).padStart(2, "0");
@@ -227,10 +249,21 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
       ? await prisma.transport.findMany({ where: { ownerId: { in: ownerIds } } })
       : [];
 
+    const candidateIds = [...owned, ...fleet, ...driverOwned].map((row) => row.id);
+    const stsDocs = candidateIds.length
+      ? await prisma.doc.findMany({
+          where: { ownerId: { in: candidateIds }, name: STS_NAME },
+        })
+      : [];
+    const stsByTransport = new Map(
+      stsDocs.map((doc) => [doc.ownerId.toUpperCase(), doc.url]),
+    );
+
     type Row = (typeof owned)[number];
     const picked: { row: Row; relation: string }[] = [];
     const seen = new Set<string>();
     const push = (row: Row, relation: string) => {
+      const stsKey = stsByTransport.get(row.id.toUpperCase()) ?? null;
       const key = JSON.stringify([
         row.id,
         row.name,
@@ -243,7 +276,7 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
         row.driverPhone,
         row.driverFio,
         row.image,
-        row.sts,
+        stsKey,
         row.ownerId,
         relation,
       ]);
@@ -279,7 +312,8 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
       if (row.driverFio != null) driver.fio = row.driverFio;
       item.driver = driver;
       if (row.image != null) item.image = row.image;
-      if (row.sts != null) item.sts = row.sts;
+      const stsKey = stsByTransport.get(row.id.toUpperCase());
+      if (stsKey) item.sts = stsKey;
       item.relation_type = relation;
       item.owner_id = row.ownerId;
       return item;
@@ -335,7 +369,6 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
           vin,
           manufactureYear,
           image,
-          sts,
           transportType,
           experience,
           loadCapacity,
@@ -343,6 +376,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
           driverFio,
         },
       });
+      if (sts) await saveStsDoc(transportId, sts);
       return ok({ message: "Транспорт создан", guid: transportId });
     }
 
@@ -352,7 +386,6 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
       vin?: string | null;
       manufactureYear?: number | null;
       image?: string | null;
-      sts?: string | null;
       transportType?: string | null;
       experience?: number | null;
       loadCapacity?: number | null;
@@ -364,7 +397,6 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
     if (vin != null) data.vin = vin;
     if (manufactureYear != null) data.manufactureYear = manufactureYear;
     if (image != null) data.image = image;
-    if (sts != null) data.sts = sts;
     if (transportType != null) data.transportType = transportType;
     if (experience != null) data.experience = experience;
     if (loadCapacity != null) data.loadCapacity = loadCapacity;
@@ -372,6 +404,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
     if (driverFio != null) data.driverFio = driverFio;
 
     if (!Object.keys(data).length) {
+      if (sts) await saveStsDoc(existing.id, sts);
       return ok({ message: "Данные транспорта обновлены" });
     }
 
@@ -379,7 +412,10 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
       where: { id: existing.id, ownerId: user.id },
       data,
     });
-    if (updated.count > 0) return ok({ message: "Данные транспорта обновлены" });
+    if (updated.count > 0) {
+      if (sts) await saveStsDoc(existing.id, sts);
+      return ok({ message: "Данные транспорта обновлены" });
+    }
     return fail("Ошибка обновления транспорта");
   } catch (error) {
     return serverError(error, false);
