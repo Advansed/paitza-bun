@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db";
-import { readRoute } from "../lib/route";
+import { readRoutes } from "../lib/route";
 import {
   asString,
   asUuid,
@@ -318,15 +318,29 @@ async function creditTopups(db: Db, rows: KassaIn[]) {
 
 async function exchangeAdvanceReserve(userId: string, db: Db = prisma): Promise<number> {
   const cargos = await db.cargo.findMany({ where: { client: userId } });
+  const eligible = cargos.filter((cargo) => n(cargo.weight) > 0 && n(cargo.advance) > 0);
+  if (!eligible.length) return 0;
+
+  const moves = await db.transportation.findMany({
+    where: { cargo: { in: eligible.map((cargo) => cargo.id) } },
+  });
+  const byCargo = new Map<string, typeof moves>();
+  for (const move of moves) {
+    if (move.cargo == null) continue;
+    const key = move.cargo.toUpperCase();
+    const list = byCargo.get(key);
+    if (list) list.push(move);
+    else byCargo.set(key, [move]);
+  }
+
   let sum = 0;
-  for (const cargo of cargos) {
+  for (const cargo of eligible) {
     const weight = n(cargo.weight);
     const advance = n(cargo.advance);
-    if (!(weight > 0) || !(advance > 0)) continue;
-    const moves = await db.transportation.findMany({ where: { cargo: cargo.id } });
-    const maxStatus = moves.reduce((max, row) => Math.max(max, row.status ?? -1), -1);
+    const cargoMoves = byCargo.get(cargo.id.toUpperCase()) ?? [];
+    const maxStatus = cargoMoves.reduce((max, row) => Math.max(max, row.status ?? -1), -1);
     if (maxStatus < 10) continue;
-    const ordered = moves
+    const ordered = cargoMoves
       .filter((row) => {
         const status = row.status ?? 0;
         return status >= 11 && status <= 20;
@@ -720,11 +734,18 @@ export async function get_balance(params: Params): Promise<Result> {
 
     const wallet = await kassaBalance(user.id, true);
     const deals = await prisma.dealLeft.findMany({ where: { performerId: user.id } });
+    const dealIds = [...new Set(deals.map((row) => row.dealId))];
+    const moves = dealIds.length
+      ? await prisma.transportation.findMany({
+          where: { id: { in: dealIds } },
+          select: { id: true, status: true },
+        })
+      : [];
+    const statusById = new Map(moves.map((move) => [move.id.toUpperCase(), move.status ?? -1]));
     let hold = 0;
     let upcoming = 0;
     for (const row of deals) {
-      const move = await prisma.transportation.findUnique({ where: { id: row.dealId } });
-      const status = move?.status ?? -1;
+      const status = statusById.get(row.dealId.toUpperCase()) ?? -1;
       if (status < 11 || status > 19) continue;
       hold += n(row.advance);
       upcoming += n(row.summ);
@@ -761,15 +782,41 @@ export async function get_deals(params: Params): Promise<Result> {
     const lefts = await prisma.dealLeft.findMany({
       where: { clientId: user.id, amount: { gt: 0 } },
     });
-    const data = [];
+    const moveIds = [...new Set(lefts.map((left) => left.dealId))];
+    const moves = moveIds.length
+      ? await prisma.transportation.findMany({ where: { id: { in: moveIds } } })
+      : [];
+    const moveById = new Map(moves.map((move) => [move.id.toUpperCase(), move]));
+
+    const kept: { left: (typeof lefts)[number]; move: (typeof moves)[number] }[] = [];
     for (const left of lefts) {
-      const move = await prisma.transportation.findUnique({ where: { id: left.dealId } });
+      const move = moveById.get(left.dealId.toUpperCase());
       const status = move?.status ?? -1;
       if (!move?.cargo || status < 11 || status > 20) continue;
-      const cargo = await prisma.cargo.findUnique({ where: { id: move.cargo } });
+      kept.push({ left, move });
+    }
+
+    const cargoIds = [...new Set(kept.map((item) => item.move.cargo).filter((id): id is string => Boolean(id)))];
+    const performerIds = [...new Set(kept.map((item) => item.left.performerId))];
+    const [cargos, performers, routes] = await Promise.all([
+      cargoIds.length ? prisma.cargo.findMany({ where: { id: { in: cargoIds } } }) : Promise.resolve([]),
+      performerIds.length
+        ? prisma.user.findMany({
+            where: { id: { in: performerIds } },
+            select: { id: true, name: true, code: true },
+          })
+        : Promise.resolve([]),
+      readRoutes(cargoIds),
+    ]);
+    const cargoById = new Map(cargos.map((cargo) => [cargo.id.toUpperCase(), cargo]));
+    const performerById = new Map(performers.map((user) => [user.id.toUpperCase(), user]));
+
+    const data = [];
+    for (const { left, move } of kept) {
+      const cargo = move.cargo ? cargoById.get(move.cargo.toUpperCase()) : undefined;
       if (!cargo) continue;
-      const performer = await prisma.user.findUnique({ where: { id: left.performerId } });
-      const route = await readRoute(cargo.id);
+      const performer = performerById.get(left.performerId.toUpperCase());
+      const route = routes.get(cargo.id.toUpperCase()) ?? [];
       data.push({
         pickup: cargo.pickupDate?.getTime() ?? Number.NEGATIVE_INFINITY,
         row: {

@@ -1,4 +1,5 @@
 import { prisma } from "../db";
+import { Prisma } from "@prisma/client";
 import type { Db } from "./user";
 import { uuid } from "./result";
 
@@ -31,7 +32,17 @@ function cityOf(city: unknown): string | null {
 }
 
 export async function readRoute(cargoId: string, db: Db = prisma): Promise<RouteOut[]> {
+  const grouped = await readRoutes([cargoId], db);
+  return grouped.get(cargoId.toUpperCase()) ?? [];
+}
+
+export async function readRoutes(cargoIds: string[], db: Db = prisma): Promise<Map<string, RouteOut[]>> {
+  const grouped = new Map<string, RouteOut[]>();
+  const ids = [...new Set(cargoIds.filter(Boolean))];
+  if (!ids.length) return grouped;
+
   const rows = await db.$queryRaw<Array<{
+    cargo_id: string;
     id: string;
     sequence_num: number;
     point_type: string;
@@ -40,22 +51,30 @@ export async function readRoute(cargoId: string, db: Db = prisma): Promise<Route
     lat: number | null;
     lon: number | null;
   }>>`
-    SELECT id, sequence_num, point_type, city, address,
+    SELECT cargo_id, id, sequence_num, point_type, city, address,
            ST_Latitude(location) AS lat,
            ST_Longitude(location) AS lon
     FROM t_cargo_route_point
-    WHERE cargo_id = ${cargoId}
+    WHERE cargo_id IN (${Prisma.join(ids)})
     ORDER BY sequence_num ASC
   `;
-  return rows.map((r) => ({
-    id: r.id,
-    sequence_num: Number(r.sequence_num),
-    point_type: r.point_type,
-    city: r.city,
-    address: r.address,
-    lat: r.lat == null ? 0 : Number(r.lat),
-    lon: r.lon == null ? 0 : Number(r.lon),
-  }));
+
+  for (const row of rows) {
+    const key = row.cargo_id.toUpperCase();
+    const point: RouteOut = {
+      id: row.id,
+      sequence_num: Number(row.sequence_num),
+      point_type: row.point_type,
+      city: row.city,
+      address: row.address,
+      lat: row.lat == null ? 0 : Number(row.lat),
+      lon: row.lon == null ? 0 : Number(row.lon),
+    };
+    const list = grouped.get(key);
+    if (list) list.push(point);
+    else grouped.set(key, [point]);
+  }
+  return grouped;
 }
 
 export async function replaceRoute(cargoId: string, route: RouteIn[] | undefined, db: Db) {

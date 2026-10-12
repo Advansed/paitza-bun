@@ -1,5 +1,4 @@
 import { prisma } from "../db";
-import { getPhone } from "../lib/phone";
 import { asUuid, dateOrNull, fail, n, ok, uuid, ymd } from "../lib/result";
 import { userByToken } from "../lib/user";
 
@@ -227,12 +226,30 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
   try {
     const self = user.id.toUpperCase();
     const owned = await prisma.transport.findMany({ where: { ownerId: user.id } });
-    const foreign = await prisma.transport.findMany({
-      where: { driverPhone: { not: null }, NOT: { ownerId: user.id } },
-    });
-    const fleet = foreign.filter(
-      (row) => row.ownerId.toUpperCase() !== self && getPhone(row.driverPhone) === user.code,
-    );
+    const fleetIds = user.code
+      ? await prisma.$queryRaw<{ id: string }[]>`
+          SELECT id FROM (
+            SELECT id,
+                   REGEXP_REPLACE(driver_phone, '[^0-9]', '') AS digits
+            FROM t_transport
+            WHERE driver_phone IS NOT NULL
+              AND UPPER(owner_id) <> ${self}
+          ) phones
+          WHERE CHAR_LENGTH(digits) >= 7
+            AND (
+              CASE
+                WHEN CHAR_LENGTH(digits) = 11 AND LEFT(digits, 1) = '8'
+                  THEN CONCAT('+7', SUBSTRING(digits, 2))
+                WHEN CHAR_LENGTH(digits) = 10
+                  THEN CONCAT('+7', digits)
+                ELSE CONCAT('+', digits)
+              END
+            ) = ${user.code}
+        `
+      : [];
+    const fleet = fleetIds.length
+      ? await prisma.transport.findMany({ where: { id: { in: fleetIds.map((row) => row.id) } } })
+      : [];
 
     const companies = await prisma.company.findMany({
       where: { client: user.id },
