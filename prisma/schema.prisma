@@ -62,6 +62,7 @@ model Transport {
   vin             String?  @db.NVarChar(17)
   manufactureYear Int?     @map("manufacture_year")
   image           String?  @db.LongText
+  sts             String?  @db.LongText
   experience      Int?
   loadCapacity    Decimal? @map("load_capacity") @db.Decimal(10, 2)
   transportType   String?  @map("transport_type") @db.Char(36)

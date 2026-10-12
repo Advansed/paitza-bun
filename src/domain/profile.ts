@@ -243,6 +243,7 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
         row.driverPhone,
         row.driverFio,
         row.image,
+        row.sts,
         row.ownerId,
         relation,
       ]);
@@ -278,6 +279,7 @@ export async function get_transport(params: Params): Promise<Record<string, unkn
       if (row.driverFio != null) driver.fio = row.driverFio;
       item.driver = driver;
       if (row.image != null) item.image = row.image;
+      if (row.sts != null) item.sts = row.sts;
       item.relation_type = relation;
       item.owner_id = row.ownerId;
       return item;
@@ -310,6 +312,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
     const loadCapacity = jsonDecimal(params.load_capacity);
     const experience = jsonInt(params.experience);
     const image = jsonValue(params.image);
+    const sts = jsonValue(params.sts);
     const name = jsonValue(params.name);
     const driverPhone = jsonValue(params.driver_phone);
     const driverFio = jsonValue(params.driver_fio);
@@ -332,6 +335,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
           vin,
           manufactureYear,
           image,
+          sts,
           transportType,
           experience,
           loadCapacity,
@@ -348,6 +352,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
       vin?: string | null;
       manufactureYear?: number | null;
       image?: string | null;
+      sts?: string | null;
       transportType?: string | null;
       experience?: number | null;
       loadCapacity?: number | null;
@@ -359,6 +364,7 @@ export async function set_transport(params: Params): Promise<Record<string, unkn
     if (vin != null) data.vin = vin;
     if (manufactureYear != null) data.manufactureYear = manufactureYear;
     if (image != null) data.image = image;
+    if (sts != null) data.sts = sts;
     if (transportType != null) data.transportType = transportType;
     if (experience != null) data.experience = experience;
     if (loadCapacity != null) data.loadCapacity = loadCapacity;
