@@ -147,6 +147,29 @@ async function party(userId: string | null) {
   };
 }
 
+function mapChatMessage(row: {
+  id: string;
+  sender: string;
+  recipient: string;
+  cargo: string;
+  message: string | null;
+  image: string | null;
+  createdDate: Date;
+  isRead: boolean;
+}) {
+  return {
+    id: row.id,
+    sender: row.sender,
+    recipient: row.recipient,
+    cargo: row.cargo,
+    message: row.message ?? "",
+    image: row.image,
+    timestamp: timestamp(row.createdDate),
+    isRead: row.isRead,
+    read: row.isRead,
+  };
+}
+
 export async function get_chats(params: Params): Promise<Result> {
   const user = await userByToken(params.token);
   if (!user) return fail("Неверный токен");
@@ -176,12 +199,37 @@ export async function get_chats(params: Params): Promise<Result> {
     const partnerId = dialog.customerId === user.id ? dialog.driverId : dialog.customerId;
     const partner = userById.get(partnerId);
     if (!cargo || !partner) continue;
+
+    const threadWhere = participants(dialog.cargoId, user.id, partnerId);
+    const [last, unread_count] = await Promise.all([
+      prisma.chat.findFirst({
+        where: threadWhere,
+        orderBy: { createdDate: "desc" },
+      }),
+      prisma.chat.count({
+        where: {
+          ...threadWhere,
+          recipient: user.id,
+          isRead: false,
+        },
+      }),
+    ]);
+
+    const lastText = last?.message?.trim()
+      ? last.message
+      : last?.image
+        ? "📷"
+        : "";
+
     data.push({
       cargo: dialog.cargoId,
       cargo_name: cargo.name,
       recipient: partner.id,
       rec_name: partner.name,
       cnt: dialog.totalMessages,
+      last_message: lastText,
+      last_time: last ? timestamp(last.createdDate) : "",
+      unread_count,
     });
   }
   return ok({ data });
@@ -197,29 +245,23 @@ export async function get_messages(params: Params): Promise<Result> {
   const offset = asIntDefault(params.offset, 0);
   const where = cargo && recipient ? participants(cargo, user.id, recipient) : null;
   const totalCount = where ? await prisma.chat.count({ where }) : 0;
+  // Newest-first page, then reverse so UI gets chronological ASC within the page.
   const rows = where
     ? await prisma.chat.findMany({
         where,
-        orderBy: { createdDate: "asc" },
+        orderBy: { createdDate: "desc" },
         skip: offset,
         take: limit,
       })
     : [];
+  const chronological = [...rows].reverse();
 
   return ok({
     data: {
       recipient,
       cargo,
-      messages: rows.map((row) => ({
-        id: row.id,
-        sender: row.sender,
-        recipient: row.recipient,
-        cargo: row.cargo,
-        message: row.message,
-        image: row.image,
-        timestamp: timestamp(row.createdDate),
-        read: row.isRead,
-      })),
+      offset,
+      messages: chronological.map(mapChatMessage),
       hasMore: offset + limit < totalCount ? 1 : 0,
       totalCount,
     },
@@ -234,20 +276,40 @@ export async function send_message(params: Params): Promise<Result> {
   const recipient = asUuid(params.recipient);
   if (!cargo || !recipient) return fail("Сообщение не записано");
 
+  const id = uuid();
+  const createdDate = new Date();
+  const message = textOrNull(params.message);
+  const image = textOrNull(params.image);
+
   await prisma.chat.create({
     data: {
-      id: uuid(),
+      id,
       cargo,
       sender: user.id,
       recipient,
-      createdDate: new Date(),
-      message: textOrNull(params.message),
-      image: textOrNull(params.image),
+      createdDate,
+      message,
+      image,
       isRead: false,
       status: asInt(params.status),
     },
   });
-  return ok({ message: "Сообщение записано" });
+
+  const payload = mapChatMessage({
+    id,
+    sender: user.id,
+    recipient,
+    cargo,
+    message,
+    image,
+    createdDate,
+    isRead: false,
+  });
+
+  return ok({
+    message: "Сообщение записано",
+    data: { message: payload },
+  });
 }
 
 export async function send_image(params: Params): Promise<Result> {
@@ -278,14 +340,22 @@ export async function mark_as_read(params: Params): Promise<Result> {
   const user = await userByToken(params.token);
   if (!user) return fail("Неверный токен");
 
+  const cargo = asUuid(params.cargo);
+  const recipient = asUuid(params.recipient);
   const ids = guidList(params.guids);
   if (ids.length) {
     await prisma.chat.updateMany({
-      where: { id: { in: ids } },
+      where: {
+        id: { in: ids },
+        recipient: user.id,
+      },
       data: { isRead: true },
     });
   }
-  return ok({ message: "Данные обновлены" });
+  return ok({
+    message: "Данные обновлены",
+    data: { recipient, cargo },
+  });
 }
 
 export async function get_photos(params: Params): Promise<Result> {
@@ -307,9 +377,13 @@ export async function get_photos(params: Params): Promise<Result> {
     return ok({
       data: rows.map((row) => ({ image: row.image })),
       message: "Список изображений получен",
+      requestId: params.requestId ?? null,
+      cargo,
+      recipient,
+      status,
     });
   } catch (error) {
-    return fail(sqlMessage(error));
+    return fail(sqlMessage(error), { requestId: params.requestId ?? null });
   }
 }
 

@@ -207,19 +207,36 @@ export const attachSockets                          = (io: Server) => {
 
     on("get_chats", (data) => method(socket, "get_chats", data));
     on("get_messages", (data) => method(socket, "get_messages", data));
+    on("mark_as_read", (data) => method(socket, "mark_as_read", data));
     on("send_message", async (data) => {
       const result = await method(socket, "send_message", data);
       if (!result.success) return;
+
+      const message =
+        result.data && typeof result.data === "object" && "message" in result.data
+          ? (result.data as { message?: Record<string, unknown> }).message
+          : null;
+      if (message) {
+        const partnerForSender = String(data.recipient ?? "");
+        const partnerForRecipient = String(socket.userId ?? "");
+        socket.emit("new_message", {
+          success: true,
+          data: { message, partner: partnerForSender },
+        });
+        const peer = sockets.findSocket(partnerForSender);
+        if (peer?.connected) {
+          peer.emit("new_message", {
+            success: true,
+            data: { message, partner: partnerForRecipient },
+          });
+        }
+      }
+
+      // Refresh chat list metadata only (no full message reload).
       await method(socket, "get_chats", data);
-      await method(socket, "get_messages", data);
       const recipient = sockets.findSocket(String(data.recipient ?? ""));
       if (recipient?.userToken) {
         await method(recipient, "get_chats", { token: recipient.userToken });
-        await method(recipient, "get_messages", {
-          token: recipient.userToken,
-          cargo: data.cargo,
-          recipient: socket.userId,
-        });
       }
     });
     on("get_contract", (data) => method(socket, "get_contract", data));
