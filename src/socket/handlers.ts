@@ -330,7 +330,11 @@ export const attachSockets                          = (io: Server) => {
       });
     }
     on("get_company_members", (data) => method(socket, "get_company_members", data));
-    on("set_location", (data) => method(socket, "set_location", data));
+    on("set_location", async (data) => {
+      const result = await method(socket, "set_location", data);
+      if (result.success) emitOrderLocations(result);
+    });
+    on("get_order_location", (data) => method(socket, "get_order_location", data));
     on("get_transport_types", (data) => method(socket, "get_transport_types", data));
 
     on("upload_doc", async (data) => {
@@ -398,6 +402,31 @@ export const pollPayments                           = async () => {
     const orderStatus = map[status.Status];
     if (orderStatus != null) {
       await call("set_payment", { id: status.OrderId, orderStatus });
+    }
+  }
+}
+
+export function emitOrderLocations(result: Result) {
+  const updates = Array.isArray(result.updates) ? result.updates : [];
+  for (const raw of updates) {
+    if (!raw || typeof raw !== "object") continue;
+    const update = raw as Record<string, unknown>;
+    const cargoId = typeof update.cargo_id === "string" ? update.cargo_id : "";
+    if (!cargoId) continue;
+    const payload = {
+      success: true,
+      cargo_id: cargoId,
+      lat: update.lat ?? null,
+      lon: update.lon ?? null,
+      period: update.period ?? null,
+    };
+    const ids = [update.customer, update.executor].filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+    for (const id of new Set(ids)) {
+      for (const client of sockets.findSockets(id)) {
+        client.emit("order_location", payload);
+      }
     }
   }
 }

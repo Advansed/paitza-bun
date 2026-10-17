@@ -297,22 +297,117 @@ export async function set_insurance(params: Params): Promise<Result> {
   return addMoney(params, "insurance", "Insurance updated");
 }
 
+const ACTIVE_ORDER_MIN = 12;
+const ACTIVE_ORDER_MAX = 19;
+
+function readLatLon(params: Params): { lat: number; lon: number } | null {
+  const lat = n(params.lat, Number.NaN);
+  const lon = n(params.lon, Number.NaN);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) return null;
+  if (lat === 0 && lon === 0) return null;
+  return { lat, lon };
+}
+
+async function activeOrdersOf(userId: string) {
+  return prisma.transportation.findMany({
+    where: {
+      status: { gte: ACTIVE_ORDER_MIN, lte: ACTIVE_ORDER_MAX },
+      cargo: { not: null },
+      OR: [{ client: userId }, { driverId: userId }],
+    },
+  });
+}
+
 export async function set_location(params: Params): Promise<Result> {
   const user = await userByToken(params.token);
   if (!user) return fail("Invalid token");
+  if (user.userType !== 2 && user.userType !== 3) {
+    return fail("Местоположение отправляет только исполнитель");
+  }
+  const coords = readLatLon(params);
+  if (!coords) return fail("Некорректные координаты");
+
+  const moves = await activeOrdersOf(user.id);
+  if (!moves.length) return fail("Нет взятых заказов");
+
+  const cargoIds = [...new Set(moves.map((move) => move.cargo).filter((id): id is string => !!id))];
+  const cargos = cargoIds.length
+    ? await prisma.cargo.findMany({
+        where: { id: { in: cargoIds } },
+        select: { id: true, client: true },
+      })
+    : [];
+  const customerByCargo = new Map(cargos.map((cargo) => [cargo.id, cargo.client]));
+
+  const period = new Date();
   try {
     await prisma.location.create({
       data: {
         userId: user.id,
-        period: new Date(),
-        lat: params.lat == null ? null : n(params.lat),
-        lon: params.lon == null ? null : n(params.lon),
+        period,
+        lat: coords.lat,
+        lon: coords.lon,
       },
     });
-    return ok({ message: "Местоположение сохранено" });
   } catch {
     return fail("Ошибка сохранения ( местоположение )");
   }
+
+  return ok({
+    message: "Местоположение сохранено",
+    lat: coords.lat,
+    lon: coords.lon,
+    period: period.toISOString(),
+    updates: cargoIds.map((cargoId) => ({
+      cargo_id: cargoId,
+      customer: customerByCargo.get(cargoId) ?? null,
+      executor: user.id,
+      lat: coords.lat,
+      lon: coords.lon,
+      period: period.toISOString(),
+    })),
+  });
+}
+
+export async function get_order_location(params: Params): Promise<Result> {
+  const user = await userByToken(params.token);
+  if (!user) return fail("Invalid token");
+  const cargoId = asUuid(params.cargo_id ?? params.cargo);
+  if (!cargoId) return fail("Груз не указан");
+
+  const cargo = await prisma.cargo.findUnique({ where: { id: cargoId } });
+  if (!cargo) return fail("Груз не найден");
+
+  const moves = await prisma.transportation.findMany({
+    where: { cargo: cargoId, status: { gte: ACTIVE_ORDER_MIN, lte: ACTIVE_ORDER_MAX } },
+  });
+  if (!moves.length) return fail("Нет активного заказа");
+
+  const allowed = new Set<string>();
+  const performers = new Set<string>();
+  if (cargo.client) allowed.add(cargo.client);
+  for (const move of moves) {
+    allowed.add(move.client);
+    performers.add(move.client);
+    if (move.driverId) {
+      allowed.add(move.driverId);
+      performers.add(move.driverId);
+    }
+  }
+  if (!allowed.has(user.id)) return fail("Нет доступа");
+
+  const loc = await prisma.location.findFirst({
+    where: { userId: { in: [...performers] } },
+    orderBy: { period: "desc" },
+  });
+
+  return ok({
+    cargo_id: cargoId,
+    lat: loc?.lat == null ? null : n(loc.lat),
+    lon: loc?.lon == null ? null : n(loc.lon),
+    period: loc?.period ? loc.period.toISOString() : null,
+  });
 }
 
 export async function set_inv(params: Params): Promise<Result> {

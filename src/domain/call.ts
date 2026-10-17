@@ -38,6 +38,7 @@ const procedures: Record<string, Proc> = {
   get_deals: money.get_deals,
   get_invoice: money.get_invoice,
   get_messages: chat.get_messages,
+  get_order_location: cargo.get_order_location,
   get_passport: profile.get_passport,
   get_photos: chat.get_photos,
   get_seller: money.get_seller,

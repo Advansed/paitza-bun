@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { call, userByToken } from "../domain/call";
-import { sockets } from "../socket/handlers";
+import { emitOrderLocations, sockets } from "../socket/handlers";
 import { mailer } from "../services/mail";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
 import {
@@ -98,10 +98,7 @@ export function createApp() {
     const user = await userByToken(body.token);
     if (!user) return c.json({ success: false, message: "Неверный токен" }, 401);
     const result = await call("set_location", body);
-    if (result.success && body.recipient) {
-      const recipient = sockets.findSocket(String(body.recipient));
-      recipient?.emit("set_location", result);
-    }
+    if (result.success) emitOrderLocations(result);
     return c.json(result);
   });
 
