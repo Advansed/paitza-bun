@@ -3,6 +3,7 @@ import { call } from "../domain/call";
 import { type Result } from "../lib/result";
 import { analyzeCargo, sendMessage } from "../services/ai";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
+import { notifyChatMessage, notifyNewOrder, notifyOffer, notifyStatusChange } from "../services/push";
 import { checkGatewayCode, sendGatewayVerification } from "../services/sms";
 import { decodeBase64File, getFotosBuffer, resolveImageInput, uploadFotos } from "../services/storage";
 import { checkPaymentStatus, createSBPPayment, formatDateWithTimezone } from "../services/tinkoff";
@@ -170,6 +171,7 @@ export const attachSockets                          = (io: Server) => {
       if (result.success) {
         await refreshOnlineDriversWorks();
         await method(socket, "get_balance", { token: data.token });
+        void notifyNewOrder(data.guid);
       }
     });
     on("unpublish_cargo", async (data) => {
@@ -201,7 +203,20 @@ export const attachSockets                          = (io: Server) => {
     for (const event of ["set_offer", "del_offer", "set_status"]) {
       on(event, async (data) => {
         const result = await method(socket, event, data);
-        if (result.success) await refreshParties(result);
+        if (result.success) {
+          await refreshParties(result);
+          if (event === "set_offer") void notifyOffer(result.customer, data.guid);
+          if (event === "set_status") {
+            void notifyStatusChange({
+              actorId: socket.userId,
+              customer: result.customer,
+              carrier: result.carrier,
+              driver: result.driver,
+              moveId: data.guid,
+              status: data.status,
+            });
+          }
+        }
       });
     }
 
@@ -234,6 +249,13 @@ export const attachSockets                          = (io: Server) => {
 
       // Refresh chat list metadata only (no full message reload).
       await method(socket, "get_chats", data);
+      void notifyChatMessage({
+        recipientId: data.recipient,
+        senderId: socket.userId,
+        cargoId: data.cargo,
+        text: data.message,
+        image: data.image,
+      });
       const recipient = sockets.findSocket(String(data.recipient ?? ""));
       if (recipient?.userToken) {
         await method(recipient, "get_chats", { token: recipient.userToken });

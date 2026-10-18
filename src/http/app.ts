@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { call, userByToken } from "../domain/call";
 import { emitOrderLocations, sockets } from "../socket/handlers";
 import { mailer } from "../services/mail";
+import { notifyChatMessage } from "../services/push";
 import { verifyPassportPhoto, verifyPassportRegistration } from "../services/passport";
 import {
   getFotosBuffer,
@@ -89,7 +90,15 @@ export function createApp() {
     const user = await userByToken(body.token);
     if (!user) return c.json({ success: false, message: "Неверный токен" }, 401);
     const result = await call("send_image", { token: body.token, recipient: body.recipient, cargo: body.cargo, image: body.image, message: "" });
-    if (result.success) await notifyChat(body.recipient, body.cargo, user.id);
+    if (result.success) {
+      await notifyChat(body.recipient, body.cargo, user.id);
+      void notifyChatMessage({
+        recipientId: body.recipient,
+        senderId: user.id,
+        cargoId: body.cargo,
+        image: true,
+      });
+    }
     return c.json(result);
   });
 
