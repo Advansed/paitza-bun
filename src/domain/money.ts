@@ -18,6 +18,19 @@ import { NO_COMPANY, companyCurrency, kassaBalance, kassaBalances, kassaMoves, o
 
 type Params = Record<string, unknown>;
 
+/** Валюты грузов через raw SQL — не зависит от актуальности Prisma Client (select currency). */
+async function cargoCurrencyMap(cargoIds: string[], db: Db = prisma): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (!cargoIds.length) return map;
+  const rows = await db.$queryRaw<Array<{ id: string; currency: string | null }>>`
+    SELECT id, currency FROM t_cargo WHERE id IN (${Prisma.join(cargoIds)})
+  `;
+  for (const row of rows) {
+    map.set(row.id.toUpperCase(), companyCurrency(row.currency));
+  }
+  return map;
+}
+
 const MONTHS = [
   "января", "февраля", "марта", "апреля", "мая", "июня",
   "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -741,11 +754,21 @@ export async function get_balance(params: Params): Promise<Result> {
       : [];
     const statusById = new Map(moves.map((move) => [move.id.toUpperCase(), move.status ?? -1]));
     const cargoIds = [...new Set(moves.map((m) => m.cargo).filter((id): id is string => Boolean(id)))];
-    const cargos = cargoIds.length
-      ? await prisma.cargo.findMany({ where: { id: { in: cargoIds } }, select: { id: true, currency: true } })
-      : [];
-    const cargoCurrency = new Map(cargos.map((c) => [c.id.toUpperCase(), companyCurrency(c.currency)]));
     const moveCargo = new Map(moves.map((m) => [m.id.toUpperCase(), m.cargo]));
+
+    const since = new Date();
+    since.setMonth(since.getMonth() - 1);
+    const finishedExtra = await prisma.transportation.findMany({
+      where: { client: user.id, status: 20, period: { gte: since } },
+      select: { id: true, cargo: true, cost: true },
+    });
+    const allCargoIds = [
+      ...new Set([
+        ...cargoIds,
+        ...finishedExtra.map((row) => row.cargo).filter((id): id is string => Boolean(id)),
+      ]),
+    ];
+    const cargoCurrency = await cargoCurrencyMap(allCargoIds);
 
     const holdBy: Record<string, number> = {};
     const upcomingBy: Record<string, number> = {};
@@ -762,26 +785,6 @@ export async function get_balance(params: Params): Promise<Result> {
       upcoming += sum;
       holdBy[cur] = (holdBy[cur] ?? 0) + adv;
       upcomingBy[cur] = (upcomingBy[cur] ?? 0) + sum;
-    }
-    const since = new Date();
-    since.setMonth(since.getMonth() - 1);
-    const finishedExtra = await prisma.transportation.findMany({
-      where: { client: user.id, status: 20, period: { gte: since } },
-      select: { id: true, cargo: true, cost: true },
-    });
-    const finishedCargoIds = [
-      ...new Set(
-        finishedExtra
-          .map((row) => row.cargo)
-          .filter((id): id is string => Boolean(id) && !cargoCurrency.has(id.toUpperCase())),
-      ),
-    ];
-    if (finishedCargoIds.length) {
-      const moreCargos = await prisma.cargo.findMany({
-        where: { id: { in: finishedCargoIds } },
-        select: { id: true, currency: true },
-      });
-      for (const c of moreCargos) cargoCurrency.set(c.id.toUpperCase(), companyCurrency(c.currency));
     }
     const monthBy: Record<string, number> = {};
     let month = 0;
@@ -881,7 +884,9 @@ export async function get_deals(params: Params): Promise<Result> {
           performer_name: performer?.name ?? null,
           performer_phone: performer?.code ?? "",
           due: n(left.amount),
-          currency: companyCurrency(cargo.currency),
+          currency: companyCurrency(
+            (cargo as { currency?: string | null }).currency,
+          ),
           total_price: n(left.summ),
           advance: n(left.advance),
           weight: move.weight != null ? n(move.weight) : cargo.weight != null ? n(cargo.weight) : null,
