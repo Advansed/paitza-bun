@@ -1,6 +1,7 @@
 import { prisma } from "../db";
 import { readRoute } from "./route";
 import { n } from "./result";
+import { companyCurrency } from "../domain/kassa";
 
 const MONTHS = [
   "январь", "февраль", "март", "апрель", "май", "июнь",
@@ -73,7 +74,10 @@ export async function contractDocument(transportationId: string) {
       representative_gender_suffix: male(carrier.gender) ? "его" : "ей",
       basis: carrierCompany?.basis ?? "Устава",
     },
-    payment: { amount: String(n(move.cost ?? cargo.price)) },
+    payment: {
+      amount: String(n(move.cost ?? cargo.price)),
+      currency: companyCurrency(cargo.currency),
+    },
     contract_date: `${pad(now.getDate())} ${MONTHS[now.getMonth()]} ${now.getFullYear()}`,
     specification: {
       sender_details: party(customerCompany, customer.name),

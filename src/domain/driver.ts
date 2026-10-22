@@ -13,7 +13,10 @@ import {
   type Result,
 } from "../lib/result";
 import { userByToken } from "../lib/user";
+import { companyCurrency, ownerCompany } from "./kassa";
 import { shareAdvance } from "./money";
+import { cbrBoard } from "../pricing/cbrCny";
+import { localize } from "../pricing/fx";
 
 type Params = Record<string, unknown>;
 
@@ -52,6 +55,17 @@ export async function get_works(params: Params): Promise<Result> {
   const publishedAt = new Map<string, Date>();
   for (const row of rows) {
     if (row.status === 10 && row.cargo && !publishedAt.has(row.cargo)) publishedAt.set(row.cargo, row.period);
+  }
+
+  const viewerCurrency = companyCurrency((await ownerCompany(user.id))?.currency);
+  let rates: Record<string, number> = { RUB: 1 };
+  let rateDate = "";
+  try {
+    const board = await cbrBoard();
+    rates = board.rates;
+    rateDate = board.rateDate;
+  } catch {
+    rates = { RUB: 1 };
   }
 
   const data = [];
@@ -102,6 +116,23 @@ export async function get_works(params: Params): Promise<Result> {
       volume: ratio != null ? round(n(cargo.volume) * ratio, 3) : tr.status === 10 ? n(cargo.volume) : n(tr.volume),
       price: ratio != null ? round(n(cargo.price) * ratio, 2) : tr.status === 10 ? n(cargo.price) : n(tr.cost),
       advance: ratio != null ? round(n(cargo.advance) * ratio, 2) : n(cargo.advance),
+      ...(() => {
+        const advance = ratio != null ? round(n(cargo.advance) * ratio, 2) : n(cargo.advance);
+        const cargoCurrencyCode = companyCurrency(cargo.currency);
+        // Начисление идёт в валюте заказа; advance_local / rate — только справочно.
+        const local =
+          viewerCurrency !== cargoCurrencyCode
+            ? localize(advance, cargoCurrencyCode, viewerCurrency, rates, rateDate)
+            : null;
+        return {
+          advance_local: local?.amount ?? advance,
+          currency: cargoCurrencyCode,
+          cargo_currency: cargoCurrencyCode,
+          rate: local?.rate ?? 1,
+          rateDate: local?.rateDate ?? "",
+          performer_currency: viewerCurrency,
+        };
+      })(),
       insurance: ratio != null ? round(n(cargo.insurance) * ratio, 2) : n(cargo.insurance),
       pickup_date: ymd(cargo.pickupDate),
       delivery_date: ymd(cargo.deliveryDate),

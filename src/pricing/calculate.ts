@@ -1,12 +1,22 @@
 import { prisma } from "../db";
 import { userByToken } from "../domain/call";
+import { ownerCompany } from "../domain/kassa";
 import { asUuid, num } from "../lib/result";
-import { rubPerCny } from "./cbrCny";
-import { quoteToCny, type CnyQuote } from "./cny";
+import { rubPer } from "./cbrCny";
+import { convertAmount } from "./fx";
 import { haulQuote, HaulQuoteError } from "./haulQuote";
 
+export type HaulCalculation = {
+  min: number;
+  target: number;
+  max: number;
+  currency: string;
+  rate: number;
+  rateDate: string;
+};
+
 export async function calculateHaul(body: Record<string, unknown>): Promise<
-  { status: 200; data: CnyQuote } | { status: 401 | 422 | 503; message: string }
+  { status: 200; data: HaulCalculation } | { status: 401 | 422 | 503; message: string }
 > {
   const user = await userByToken(body.token);
   if (!user) return { status: 401, message: "Неверный токен" };
@@ -31,10 +41,22 @@ export async function calculateHaul(body: Record<string, unknown>): Promise<
     throw error;
   }
 
+  const company = await ownerCompany(user.id);
+  const currency = company?.currency?.trim().toUpperCase() || "RUB";
   try {
-    const fx = await rubPerCny();
-    return { status: 200, data: quoteToCny(rubles, fx.rate, fx.rateDate) };
+    const fx = await rubPer(currency);
+    return {
+      status: 200,
+      data: {
+        min: convertAmount(rubles.min, 1, fx.rate),
+        target: convertAmount(rubles.target, 1, fx.rate),
+        max: convertAmount(rubles.max, 1, fx.rate),
+        currency,
+        rate: fx.rate,
+        rateDate: fx.rateDate,
+      },
+    };
   } catch {
-    return { status: 503, message: "Не удалось получить курс юаня" };
+    return { status: 503, message: "Не удалось получить курс" };
   }
 }

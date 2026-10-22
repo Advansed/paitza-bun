@@ -43,24 +43,71 @@ function walletWhere(userId: string) {
   `;
 }
 
-/** Сумма кассы: приход минус расход. Для исполнителя категория «Аванс» не входит. */
-export async function kassaBalance(userId: string, excludeAdvance = false, db: Db = prisma): Promise<{ currency: string; balance: number }> {
+export function companyCurrency(currency: string | null | undefined): string {
+  return currency?.trim().toUpperCase() || "RUB";
+}
+
+/**
+ * Политика миграции валют (cutover начислений в валюте заказчика):
+ * - Исторические строки t_kassa, уже сконвертированные в валюту исполнителя, НЕ пересчитываем
+ *   (повторный FX исказил бы остатки).
+ * - Новые проводки (DEAL_CLOSE / DEAL_PAYMENT_CLOSE / комиссия / close_deal_payout / release_hold)
+ *   пишутся в валюте заказа (cargo/document.currency).
+ * - get_balance отдаёт balances[] по всем валютам; на счету могут одновременно быть
+ *   старые остатки в home-currency и новые в валютах заказчиков.
+ * - Вывод списывает выбранную валюту остатка без автоконвертации в home-currency.
+ */
+
+/** Сумма кассы в одной валюте: приход минус расход. Для исполнителя категория «Аванс» не входит. */
+export async function kassaBalance(
+  userId: string,
+  excludeAdvance = false,
+  db: Db = prisma,
+  currencyCode?: string | null,
+): Promise<{ currency: string; balance: number }> {
+  const company = await ownerCompany(userId, db);
+  const currency = companyCurrency(currencyCode ?? company?.currency);
   const category = excludeAdvance
     ? Prisma.sql`AND k.category <> 'Аванс'`
     : Prisma.empty;
-  const rows = await db.$queryRaw<Array<{ currency: string | null; balance: unknown }>>`
+  const rows = await db.$queryRaw<Array<{ balance: unknown }>>`
     SELECT
-      COALESCE(MAX(k.currency), 'RUB') AS currency,
+      COALESCE(SUM(IF(k.flow <> 0, k.amount, -k.amount)), 0) AS balance
+    FROM t_kassa k
+    WHERE ${walletWhere(userId)}
+      AND UPPER(TRIM(k.currency)) = ${currency}
+    ${category}
+  `;
+  return {
+    currency,
+    balance: n(rows[0]?.balance),
+  };
+}
+
+/** Остатки кассы по всем валютам (ненулевые). */
+export async function kassaBalances(
+  userId: string,
+  excludeAdvance = false,
+  db: Db = prisma,
+): Promise<Array<{ currency: string; balance: number }>> {
+  const category = excludeAdvance
+    ? Prisma.sql`AND k.category <> 'Аванс'`
+    : Prisma.empty;
+  const rows = await db.$queryRaw<Array<{ currency: string; balance: unknown }>>`
+    SELECT
+      UPPER(TRIM(k.currency)) AS currency,
       COALESCE(SUM(IF(k.flow <> 0, k.amount, -k.amount)), 0) AS balance
     FROM t_kassa k
     WHERE ${walletWhere(userId)}
     ${category}
+    GROUP BY UPPER(TRIM(k.currency))
+    HAVING COALESCE(SUM(IF(k.flow <> 0, k.amount, -k.amount)), 0) <> 0
+    ORDER BY currency
   `;
-  const row = rows[0];
-  return {
-    currency: row?.currency?.trim() || "RUB",
-    balance: n(row?.balance),
-  };
+  return rows.map((row) => ({
+    currency: companyCurrency(row.currency),
+    balance: n(row.balance),
+  }));
 }
 
 /** Движения кассы организаций этого пользователя и старые строки на его id. */
@@ -112,6 +159,8 @@ export async function recalc_kassa_lefts(): Promise<Result> {
 }
 
 export async function rubBalance(companyId: string, db: Db = prisma): Promise<number> {
-  const rows = await db.kassaLeft.findMany({ where: { companyId, currency: "RUB" } });
+  const company = await db.company.findUnique({ where: { id: companyId } });
+  const currency = companyCurrency(company?.currency);
+  const rows = await db.kassaLeft.findMany({ where: { companyId, currency } });
   return rows.reduce((sum, row) => sum + n(row.amount), 0);
 }

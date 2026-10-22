@@ -16,7 +16,7 @@ import {
   type Result,
 } from "../lib/result";
 import { userByToken } from "../lib/user";
-import { NO_COMPANY, kassaBalance, ownerCompany, recalcLefts } from "./kassa";
+import { NO_COMPANY, companyCurrency, kassaBalance, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -72,6 +72,8 @@ export async function set_cargo(params: Params): Promise<Result> {
   const cargoId = asUuid(params.guid) ?? uuid();
   const route = Array.isArray(params.route) ? (params.route as RouteIn[]) : [];
 
+  const company = await ownerCompany(user.id);
+  const currency = companyCurrency(company?.currency);
   try {
     await prisma.$transaction(async (tx) => {
       await tx.cargo.deleteMany({ where: { id: cargoId } });
@@ -94,6 +96,7 @@ export async function set_cargo(params: Params): Promise<Result> {
           contactName: params.face == null ? null : String(params.face),
           volume: dec(params.volume),
           insurance: dec(params.insurance),
+          currency,
           routeDistance: dec(params.route_distance),
         },
       });
@@ -145,6 +148,7 @@ export async function get_cargos(params: Params): Promise<Result> {
         capacity: tr ? n(tr.loadCapacity) : null,
         rating: rating ? n(rating.avgRating).toFixed(2) : "0.00",
         price: n(inv.cost),
+        currency: companyCurrency(c.currency),
         requires_action: status % 2 === 1 ? 1 : 0,
       });
     }
@@ -164,6 +168,7 @@ export async function get_cargos(params: Params): Promise<Result> {
       cost: n(c.cost),
       advance: n(c.advance),
       insurance: n(c.insurance),
+      currency: companyCurrency(c.currency),
       transport_type: c.transportType ?? DEFAULT_TRANSPORT_TYPE,
       pickup_date: ymd(c.pickupDate),
       delivery_date: ymd(c.deliveryDate),
@@ -194,9 +199,10 @@ export async function publish(params: Params): Promise<Result> {
   if (!company) return fail(NO_COMPANY);
   const advance = n(cargo.advance);
   const insurance = n(cargo.insurance);
+  const cargoCurrencyCode = companyCurrency(cargo.currency);
   const required = advance + insurance;
   if (required > 0) {
-    const wallet = await kassaBalance(user.id);
+    const wallet = await kassaBalance(user.id, false, prisma, cargoCurrencyCode);
     if (wallet.balance < required) {
       return fail("Недостаточно средств на балансе для покрытия аванса и страховки");
     }
@@ -208,13 +214,13 @@ export async function publish(params: Params): Promise<Result> {
       if (advance > 0) {
         await tx.$executeRaw`
           INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
-          VALUES (${cargoId}, 'Аванс', NOW(), 0, ${company.id}, ${advance}, 'RUB')
+          VALUES (${cargoId}, 'Аванс', NOW(), 0, ${company.id}, ${advance}, ${cargoCurrencyCode})
         `;
       }
       if (insurance > 0) {
         await tx.$executeRaw`
           INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
-          VALUES (${cargoId}, 'Страховка', NOW(), 0, ${company.id}, ${insurance}, 'RUB')
+          VALUES (${cargoId}, 'Страховка', NOW(), 0, ${company.id}, ${insurance}, ${cargoCurrencyCode})
         `;
       }
       await tx.transportation.create({

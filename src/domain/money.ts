@@ -14,7 +14,7 @@ import {
   type Result,
 } from "../lib/result";
 import type { Db } from "../lib/user";
-import { NO_COMPANY, kassaBalance, kassaMoves, ownerCompany, recalcLefts } from "./kassa";
+import { NO_COMPANY, companyCurrency, kassaBalance, kassaBalances, kassaMoves, ownerCompany, recalcLefts } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -203,22 +203,13 @@ export async function postDocument(db: Db, docId: string) {
 
   const amount = n(doc.amount);
   const dealId = doc.dealId;
+  const docCurrency = companyCurrency(doc.currency);
+
   if (doc.docType === "DEAL_CREATE" && dealId) {
     const summ = await dealBasis(db, dealId);
     if (summ != null) {
+      // Комиссия удерживается из выплаты (DEAL_CLOSE), без резерва с баланса исполнителя.
       await writeDeal(db, { ...doc, dealId }, { advance: amount, summ, debt: summ - amount, flow: true });
-      const fee = await serviceFee(db, summ, doc.recipient);
-      if (fee > 0) {
-        await insertKassaUser(db, {
-          id: doc.id,
-          category: "Резерв комиссии",
-          period: doc.docDate,
-          flow: false,
-          userId: await walletParty(db, doc.recipient),
-          amount: fee,
-          currency: doc.currency,
-        });
-      }
     }
   } else if (doc.docType === "DEAL_PAYMENT" && dealId) {
     await writeDeal(db, { ...doc, dealId }, { advance: -amount, summ: 0, debt: amount, flow: false });
@@ -234,8 +225,9 @@ export async function postDocument(db: Db, docId: string) {
         flow: false,
         userId: senderWallet,
         amount,
-        currency: doc.currency,
+        currency: docCurrency,
       });
+      // Начисление исполнителю в валюте заказчика (документа), без FX.
       await insertKassaUser(db, {
         id: doc.id,
         category: "Оплата перевозки",
@@ -243,7 +235,7 @@ export async function postDocument(db: Db, docId: string) {
         flow: true,
         userId: recipientWallet,
         amount,
-        currency: doc.currency,
+        currency: docCurrency,
       });
     }
     const summ = await dealBasis(db, dealId);
@@ -251,21 +243,12 @@ export async function postDocument(db: Db, docId: string) {
     if (fee > 0) {
       await insertKassaUser(db, {
         id: doc.id,
-        category: "Резерв комиссии",
-        period: doc.docDate,
-        flow: true,
-        userId: recipientWallet,
-        amount: fee,
-        currency: doc.currency,
-      });
-      await insertKassaUser(db, {
-        id: doc.id,
         category: "Комиссия сервиса",
         period: doc.docDate,
         flow: false,
         userId: recipientWallet,
         amount: fee,
-        currency: doc.currency,
+        currency: docCurrency,
       });
     }
   } else if (doc.docType === "DEAL_PAYMENT_CLOSE" && dealId) {
@@ -278,7 +261,7 @@ export async function postDocument(db: Db, docId: string) {
         flow: false,
         userId: await walletParty(db, doc.sender),
         amount,
-        currency: doc.currency,
+        currency: docCurrency,
       });
       await insertKassaUser(db, {
         id: doc.id,
@@ -287,7 +270,7 @@ export async function postDocument(db: Db, docId: string) {
         flow: true,
         userId: await walletParty(db, doc.recipient),
         amount,
-        currency: doc.currency,
+        currency: docCurrency,
       });
     }
   }
@@ -442,6 +425,8 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
       if (!left) continue;
       const company = await ownerCompany(move.client, tx);
       if (!company) throw new Error(NO_COMPANY);
+      const cargo = move.cargo ? await tx.cargo.findUnique({ where: { id: move.cargo } }) : null;
+      const payCurrency = companyCurrency(cargo?.currency);
       const paidRows = await tx.$queryRaw<Array<{ paid: unknown }>>`
         SELECT COALESCE(SUM(k.amount), 0) AS paid
         FROM t_kassa k
@@ -461,9 +446,11 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
                 AND d.doc_type IN ('DEAL_CLOSE', 'DEAL_PAYMENT_CLOSE')
             )
           )
+          AND UPPER(TRIM(k.currency)) = ${payCurrency}
       `;
+      const covered = round(n(move.cost) - n(left.amount), 2);
       const paid = round(n(paidRows[0]?.paid), 2);
-      const delta = round(n(move.cost) - n(left.amount) - paid, 2);
+      const delta = round(covered - paid, 2);
       if (delta > 0) {
         const carrierPay = await tx.$queryRaw<Array<{ amount: unknown }>>`
           SELECT amount
@@ -472,6 +459,7 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
             AND category = 'Оплата перевозки'
             AND \`user\` = ${company.id}
             AND flow <> 0
+            AND UPPER(TRIM(currency)) = ${payCurrency}
           LIMIT 1
         `;
         if (carrierPay[0]) {
@@ -481,11 +469,12 @@ export async function close_deal_payout(transportationId?: unknown, db?: Db): Pr
             WHERE id = ${move.id}
               AND category = 'Оплата перевозки'
               AND \`user\` = ${company.id}
+              AND UPPER(TRIM(currency)) = ${payCurrency}
           `;
         } else {
           await tx.$executeRaw`
             INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
-            VALUES (${move.id}, 'Оплата перевозки', ${new Date()}, 1, ${company.id}, ${delta}, 'RUB')
+            VALUES (${move.id}, 'Оплата перевозки', ${new Date()}, 1, ${company.id}, ${delta}, ${payCurrency})
           `;
         }
         wrote = true;
@@ -550,7 +539,7 @@ export async function create_deal_close(params: Record<string, unknown>, db?: Db
         sender: customerId,
         recipient: performerId,
         amount: money(advanceLeft),
-        currency: "RUB",
+        currency: companyCurrency(cargo.currency),
         category: "Оплата перевозки",
         posted: true,
         description: "Финализация сделки и зачет накопленного аванса перевозчику",
@@ -646,7 +635,7 @@ export async function create_invoice(params: Params): Promise<Result> {
         vatAmount: money(vat),
         orderStatus: 1,
         posted: POSTED_NO,
-        currency: "RUB",
+        currency: companyCurrency((await ownerCompany(user.id))?.currency),
       },
     });
     const data = await invoiceView(user.id, invoiceId, false);
@@ -681,7 +670,7 @@ export async function create_payment(params: Params): Promise<Result> {
         userId: user.id,
         description: params.description == null ? null : String(params.description),
         amount: amount == null ? null : money(amount),
-        currency: "RUB",
+        currency: companyCurrency((await ownerCompany(user.id))?.currency),
         phone: user.code,
         email: user.email,
         orderStatus: 1,
@@ -709,8 +698,11 @@ export async function get_balance(params: Params): Promise<Result> {
   try {
 
     
+    const homeCurrency = companyCurrency((await ownerCompany(user.id))?.currency);
+
     if (user.userType === 1) {
-      const wallet = await kassaBalance(user.id);
+      const wallets = await kassaBalances(user.id);
+      const home = wallets.find((w) => w.currency === homeCurrency) ?? { currency: homeCurrency, balance: 0 };
       const advance1 = await exchangeAdvanceReserve(user.id);
       const deals = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
       let advance2 = 0;
@@ -719,12 +711,17 @@ export async function get_balance(params: Params): Promise<Result> {
         advance2 += n(row.advance);
         if (n(row.amount) > 0) due += n(row.amount);
       }
+      const balances =
+        wallets.length > 0
+          ? wallets.map((w) => ({ currency: w.currency, balance: round(w.balance, 2) }))
+          : [{ currency: homeCurrency, balance: 0 }];
       return ok({
         data: {
           user_type: 1,
           role_name: "client",
-          currency: wallet.currency,
-          balance: round(wallet.balance, 2),
+          currency: home.currency,
+          balance: round(home.balance, 2),
+          balances,
           advance1: round(advance1, 2),
           advance2: round(advance2, 2),
           due: round(due, 2),
@@ -732,39 +729,96 @@ export async function get_balance(params: Params): Promise<Result> {
       });
     }
 
-    const wallet = await kassaBalance(user.id, true);
+    const wallets = await kassaBalances(user.id, true);
+    const home = wallets.find((w) => w.currency === homeCurrency) ?? { currency: homeCurrency, balance: 0 };
     const deals = await prisma.dealLeft.findMany({ where: { performerId: user.id } });
     const dealIds = [...new Set(deals.map((row) => row.dealId))];
     const moves = dealIds.length
       ? await prisma.transportation.findMany({
           where: { id: { in: dealIds } },
-          select: { id: true, status: true },
+          select: { id: true, status: true, cargo: true, cost: true, period: true },
         })
       : [];
     const statusById = new Map(moves.map((move) => [move.id.toUpperCase(), move.status ?? -1]));
+    const cargoIds = [...new Set(moves.map((m) => m.cargo).filter((id): id is string => Boolean(id)))];
+    const cargos = cargoIds.length
+      ? await prisma.cargo.findMany({ where: { id: { in: cargoIds } }, select: { id: true, currency: true } })
+      : [];
+    const cargoCurrency = new Map(cargos.map((c) => [c.id.toUpperCase(), companyCurrency(c.currency)]));
+    const moveCargo = new Map(moves.map((m) => [m.id.toUpperCase(), m.cargo]));
+
+    const holdBy: Record<string, number> = {};
+    const upcomingBy: Record<string, number> = {};
     let hold = 0;
     let upcoming = 0;
     for (const row of deals) {
       const status = statusById.get(row.dealId.toUpperCase()) ?? -1;
       if (status < 11 || status > 19) continue;
-      hold += n(row.advance);
-      upcoming += n(row.summ);
+      const cargoId = moveCargo.get(row.dealId.toUpperCase());
+      const cur = cargoId ? (cargoCurrency.get(cargoId.toUpperCase()) ?? homeCurrency) : homeCurrency;
+      const adv = n(row.advance);
+      const sum = n(row.summ);
+      hold += adv;
+      upcoming += sum;
+      holdBy[cur] = (holdBy[cur] ?? 0) + adv;
+      upcomingBy[cur] = (upcomingBy[cur] ?? 0) + sum;
     }
     const since = new Date();
     since.setMonth(since.getMonth() - 1);
-    const finished = await prisma.transportation.findMany({
+    const finishedExtra = await prisma.transportation.findMany({
       where: { client: user.id, status: 20, period: { gte: since } },
+      select: { id: true, cargo: true, cost: true },
     });
-    const month = finished.reduce((sum, row) => sum + n(row.cost), 0);
+    const finishedCargoIds = [
+      ...new Set(
+        finishedExtra
+          .map((row) => row.cargo)
+          .filter((id): id is string => Boolean(id) && !cargoCurrency.has(id.toUpperCase())),
+      ),
+    ];
+    if (finishedCargoIds.length) {
+      const moreCargos = await prisma.cargo.findMany({
+        where: { id: { in: finishedCargoIds } },
+        select: { id: true, currency: true },
+      });
+      for (const c of moreCargos) cargoCurrency.set(c.id.toUpperCase(), companyCurrency(c.currency));
+    }
+    const monthBy: Record<string, number> = {};
+    let month = 0;
+    for (const row of finishedExtra) {
+      const cur = row.cargo
+        ? (cargoCurrency.get(row.cargo.toUpperCase()) ?? homeCurrency)
+        : homeCurrency;
+      const cost = n(row.cost);
+      month += cost;
+      monthBy[cur] = (monthBy[cur] ?? 0) + cost;
+    }
+    const balances =
+      wallets.length > 0
+        ? wallets.map((w) => ({ currency: w.currency, balance: round(w.balance, 2) }))
+        : [{ currency: homeCurrency, balance: 0 }];
     return ok({
       data: {
         user_type: 0,
         role_name: "driver",
-        currency: wallet.currency,
-        balance: round(wallet.balance, 2),
+        currency: home.currency,
+        balance: round(home.balance, 2),
+        balances,
         hold_advance: round(hold, 2),
         upcoming_income: round(upcoming, 2),
         month_income: round(month, 2),
+        hold_advance_by: Object.entries(holdBy).map(([currency, amount]) => ({
+          currency,
+          amount: round(amount, 2),
+        })),
+        upcoming_income_by: Object.entries(upcomingBy).map(([currency, amount]) => ({
+          currency,
+          amount: round(amount, 2),
+        })),
+        month_income_by: Object.entries(monthBy).map(([currency, amount]) => ({
+          currency,
+          amount: round(amount, 2),
+        })),
       },
     });
   } catch (error) {
@@ -827,7 +881,7 @@ export async function get_deals(params: Params): Promise<Result> {
           performer_name: performer?.name ?? null,
           performer_phone: performer?.code ?? "",
           due: n(left.amount),
-          currency: "RUB",
+          currency: companyCurrency(cargo.currency),
           total_price: n(left.summ),
           advance: n(left.advance),
           weight: move.weight != null ? n(move.weight) : cargo.weight != null ? n(cargo.weight) : null,
@@ -919,11 +973,13 @@ export async function get_transactions(params: Params): Promise<Result> {
   if (!user) return fail("Неверный токен");
 
   try {
+    const homeCurrency = companyCurrency((await ownerCompany(user.id))?.currency);
     const rows: Array<{
       id: string;
       date: string;
       title: string;
       amount: number | null;
+      currency: string;
       type: string;
       period: string | null;
       sort: number;
@@ -938,6 +994,7 @@ export async function get_transactions(params: Params): Promise<Result> {
         date: ruDateTime(row.period),
         title,
         amount: n(row.amount),
+        currency: companyCurrency(row.currency),
         type: row.flow ? "income" : "expense",
         period: row.period.toISOString(),
         sort: row.period.getTime(),
@@ -953,6 +1010,7 @@ export async function get_transactions(params: Params): Promise<Result> {
         date: ruDateTime(row.date),
         title: "Ждет подтверждения",
         amount: row.amount == null ? null : n(row.amount),
+        currency: companyCurrency(row.currency) || homeCurrency,
         type: "new",
         period: row.date ? row.date.toISOString() : null,
         sort: row.date?.getTime() ?? Number.NEGATIVE_INFINITY,
@@ -971,6 +1029,7 @@ export async function get_transactions(params: Params): Promise<Result> {
         date: ruDateTime(row.invoiceDate, true),
         title: "Ждет оплаты",
         amount: n(row.totalAmount),
+        currency: companyCurrency(row.currency) || homeCurrency,
         type: "inv",
         period: row.invoiceDate.toISOString(),
         sort: row.invoiceDate.getTime(),
@@ -994,6 +1053,8 @@ export async function release_hold(transportationId?: unknown): Promise<Result> 
     if (!move) return;
     const company = await ownerCompany(move.client, tx);
     if (!company) return;
+    const cargo = move.cargo ? await tx.cargo.findUnique({ where: { id: move.cargo } }) : null;
+    const payCurrency = companyCurrency(cargo?.currency ?? company.currency);
     const rows = await tx.kassa.findMany({
       where: { id, companyId: company.id, category: "Аванс" },
     });
@@ -1003,8 +1064,8 @@ export async function release_hold(transportationId?: unknown): Promise<Result> 
     );
     if (held > 0) {
       await insertKassa(tx, [
-        { id, category: "Аванс", flow: false, companyId: company.id, amount: held, currency: "RUB" },
-        { id, category: "Оплата за рейс", flow: true, companyId: company.id, amount: held, currency: "RUB" },
+        { id, category: "Аванс", flow: false, companyId: company.id, amount: held, currency: payCurrency },
+        { id, category: "Оплата за рейс", flow: true, companyId: company.id, amount: held, currency: payCurrency },
       ]);
     }
   });
@@ -1036,14 +1097,21 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
       cargoId,
       performer,
       amount: round(amount, 2),
-      currency: row.currency == null ? "RUB" : String(row.currency),
+      currency: row.currency == null || String(row.currency).trim() === "" ? "" : String(row.currency).toUpperCase(),
     });
   }
 
-  const totalPay = payments.reduce((sum, row) => sum + row.amount, 0);
   const company = await ownerCompany(user.id);
   if (!company) return fail(NO_COMPANY);
-  const totalKassa = (await kassaBalance(user.id)).balance;
+  const payerCurrency = companyCurrency(company.currency);
+  for (const pay of payments) {
+    if (!pay.currency) pay.currency = payerCurrency;
+  }
+  // Проверка свободных средств по каждой валюте платежа отдельно.
+  const needByCurrency = new Map<string, number>();
+  for (const pay of payments) {
+    needByCurrency.set(pay.currency, round((needByCurrency.get(pay.currency) ?? 0) + pay.amount, 2));
+  }
   const reserved1 = await exchangeAdvanceReserve(user.id);
   const dealLefts = await prisma.dealLeft.findMany({ where: { clientId: user.id } });
   let reserved2 = 0;
@@ -1052,8 +1120,12 @@ export async function set_deals_payment(params: unknown): Promise<Result> {
     const status = move?.status ?? -1;
     if (status >= 11 && status <= 19) reserved2 += n(left.advance);
   }
-  if (round(totalKassa - reserved1 - reserved2, 2) < round(totalPay, 2)) {
-    return fail("Недостаточно свободных средств на балансе с учетом резервов");
+  for (const [cur, need] of needByCurrency) {
+    const wallet = await kassaBalance(user.id, false, prisma, cur);
+    const reserved = cur === payerCurrency ? reserved1 + reserved2 : 0;
+    if (round(wallet.balance - reserved, 2) < need) {
+      return fail("Недостаточно свободных средств на балансе с учетом резервов");
+    }
   }
 
   for (const pay of payments) {
@@ -1197,7 +1269,7 @@ export async function set_invoice(params: unknown): Promise<Result> {
           vatAmount: money(0),
           orderStatus: 0,
           posted: POSTED_YES,
-          currency: "RUB",
+          currency: companyCurrency(company.currency),
           rrn,
           createdAt: now,
           updatedAt: now,
@@ -1368,14 +1440,18 @@ export async function withdraw(params: Params): Promise<Result> {
   if (!company) return fail(NO_COMPANY);
   const requisites = payoutRequisites(company);
   if (!requisites.ok) return fail(requisites.message);
-  const currency = company.currency?.trim() || "RUB";
+  const homeCurrency = companyCurrency(company.currency);
+  const currency = companyCurrency(
+    params.currency == null || String(params.currency).trim() === ""
+      ? homeCurrency
+      : String(params.currency),
+  );
   const sum = round(amount, 2);
 
   try {
     await prisma.$transaction(async (tx) => {
-      const lefts = await tx.kassaLeft.findMany({ where: { companyId: company.id, currency } });
-      const available = round(lefts.reduce((total, row) => total + n(row.amount), 0), 2);
-      if (sum > available) throw new Error("Недостаточно средств для вывода");
+      const wallet = await kassaBalance(user.id, true, tx, currency);
+      if (sum > round(wallet.balance, 2)) throw new Error("Недостаточно средств для вывода");
       await insertKassa(tx, [
         {
           id: uuid(),

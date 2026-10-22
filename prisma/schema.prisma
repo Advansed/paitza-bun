@@ -140,6 +140,7 @@ model Cargo {
   contactName    String?   @map("contact_name") @db.VarChar(128)
   volume         Decimal?  @db.Decimal(15, 3)
   insurance      Decimal?  @db.Decimal(15, 2)
+  currency       String    @default("RUB") @db.Char(3)
   transportType  String?   @map("transport_type") @db.VarChar(36)
 
   routePoints CargoRoutePoint[]

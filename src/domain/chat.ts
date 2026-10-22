@@ -3,7 +3,10 @@ import { contractDocument } from "../lib/contract";
 import { readRoute } from "../lib/route";
 import { asUuid, fail, n, ok, round, uuid, type Result } from "../lib/result";
 import { userByToken, type Db } from "../lib/user";
+import { companyCurrency } from "./kassa";
 import { postDocument, unpostDocument } from "./money";
+import { cbrBoard } from "../pricing/cbrCny";
+import { localize } from "../pricing/fx";
 
 type Params = Record<string, unknown>;
 
@@ -62,7 +65,7 @@ async function syncAgreementDocument(db: Db, agreementId: string) {
       docNumber: `AGR-${agreementId.slice(0, 8)}`,
       docType: "DEAL_CREATE",
       dealId: agreementId,
-      currency: "RUB",
+      currency: companyCurrency(cargo.currency),
       category: "Аванс договора",
       ...data,
     },
@@ -526,6 +529,27 @@ export async function get_agreement_data(params: Params): Promise<Result> {
 
     const price = n(cargo.price);
     const advance = n(cargo.advance);
+    const cargoCurrencyCode = companyCurrency(cargo.currency);
+    const performerCompany = driverId
+      ? await prisma.company.findFirst({ where: { client: driverId }, orderBy: { id: "asc" } })
+      : null;
+    const performerCurrency = companyCurrency(performerCompany?.currency);
+    let advanceLocal = advance;
+    let rate = 1;
+    let rateDate = "";
+    if (driverId && performerCurrency !== cargoCurrencyCode) {
+      try {
+        const board = await cbrBoard();
+        const local = localize(advance, cargoCurrencyCode, performerCurrency, board.rates, board.rateDate);
+        if (local) {
+          advanceLocal = local.amount;
+          rate = local.rate;
+          rateDate = local.rateDate;
+        }
+      } catch {
+        advanceLocal = advance;
+      }
+    }
     const dates: Record<string, string> = {};
     if (cargo.pickupDate) dates.start = dmyUtc(cargo.pickupDate);
     if (cargo.deliveryDate) dates.end = dmyUtc(cargo.deliveryDate);
@@ -544,8 +568,14 @@ export async function get_agreement_data(params: Params): Promise<Result> {
       payment: {
         total: price,
         prepayment: advance,
+        currency: cargoCurrencyCode,
         prepaymentPercent: price > 0 ? Math.round((advance * 100) / price) : 0,
         remaining: price - advance,
+        // advance_local / performer_currency / rate — справочный FX; расчёт в currency заказа.
+        advance_local: advanceLocal,
+        performer_currency: performerCurrency,
+        rate,
+        rateDate,
       },
     };
     if (performer) data.performer = performer;
