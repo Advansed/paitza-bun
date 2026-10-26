@@ -507,6 +507,7 @@ model TransportType {
   formula     Int?
   minTarif    Decimal? @map("min_tarif") @db.Decimal(15, 2)
   maxTarif    Decimal? @map("max_tarif") @db.Decimal(15, 2)
+  urbanCoef   Decimal? @default(3.00) @map("urban_coef") @db.Decimal(4, 2)
 
   @@map("t_transport_types")
 }

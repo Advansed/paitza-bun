@@ -7,7 +7,10 @@
     "dev": "bun --watch src/index.ts",
     "start": "bun src/index.ts",
     "db:generate": "prisma generate",
-    "db:push": "prisma db push"
+    "db:push": "prisma db push",
+    "db:seed-urban": "node scripts/seed-urban-coef.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "deploy:setup": "node scripts/deploy.mjs --setup-only"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.61.0",

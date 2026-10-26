@@ -1,9 +1,15 @@
+export const URBAN_MAX_KM = 50;
+export const URBAN_COEF_MIN = 2;
+export const URBAN_COEF_MAX = 4;
+
 export type HaulInput = {
   formula: number | null;
   minTarif: number | null;
   maxTarif: number | null;
   distanceKm: number | null;
   weight: number | null;
+  /** Городской множитель 2…4; применяется при distanceKm ≤ URBAN_MAX_KM */
+  urbanCoef?: number | null;
 };
 
 export type HaulQuote = {
@@ -11,6 +17,8 @@ export type HaulQuote = {
   target: number;
   max: number;
   currency: "RUB";
+  urbanApplied: boolean;
+  urbanCoef: number;
 };
 
 export class HaulQuoteError extends Error {
@@ -20,8 +28,16 @@ export class HaulQuoteError extends Error {
   }
 }
 
-function positive(value: number | null): number | null {
+function positive(value: number | null | undefined): number | null {
   if (value == null || !Number.isFinite(value) || value <= 0) return null;
+  return value;
+}
+
+/** Clamp urban coef to [2, 4]; default 3 if missing/invalid. */
+export function clampUrbanCoef(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return 3;
+  if (value < URBAN_COEF_MIN) return URBAN_COEF_MIN;
+  if (value > URBAN_COEF_MAX) return URBAN_COEF_MAX;
   return value;
 }
 
@@ -56,6 +72,14 @@ export function haulQuote(input: HaulInput): HaulQuote {
     min = max;
     max = swap;
   }
+
+  const urbanCoef = clampUrbanCoef(input.urbanCoef);
+  const urbanApplied = distanceKm <= URBAN_MAX_KM;
+  if (urbanApplied) {
+    min *= urbanCoef;
+    max *= urbanCoef;
+  }
+
   const target = (min + max) / 2;
-  return { min, target, max, currency: "RUB" };
+  return { min, target, max, currency: "RUB", urbanApplied, urbanCoef };
 }

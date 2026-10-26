@@ -452,6 +452,7 @@ export async function get_transport_types(params: Params): Promise<Record<string
       if (row.formula != null) item.formula = row.formula;
       if (row.minTarif != null) item.min_tarif = n(row.minTarif);
       if (row.maxTarif != null) item.max_tarif = n(row.maxTarif);
+      if (row.urbanCoef != null) item.urban_coef = n(row.urbanCoef);
       return item;
     });
     return ok({ data });

@@ -13,6 +13,8 @@ export type HaulCalculation = {
   currency: string;
   rate: number;
   rateDate: string;
+  urbanApplied: boolean;
+  urbanCoef: number;
 };
 
 export async function calculateHaul(body: Record<string, unknown>): Promise<
@@ -35,6 +37,7 @@ export async function calculateHaul(body: Record<string, unknown>): Promise<
       maxTarif: row.maxTarif == null ? null : Number(row.maxTarif),
       distanceKm: num(body.distanceKm, null),
       weight: num(body.weight, null),
+      urbanCoef: row.urbanCoef == null ? null : Number(row.urbanCoef),
     });
   } catch (error) {
     if (error instanceof HaulQuoteError) return { status: 422, message: error.message };
@@ -54,6 +57,8 @@ export async function calculateHaul(body: Record<string, unknown>): Promise<
         currency,
         rate: fx.rate,
         rateDate: fx.rateDate,
+        urbanApplied: rubles.urbanApplied,
+        urbanCoef: rubles.urbanCoef,
       },
     };
   } catch {
