@@ -41,6 +41,8 @@ model User {
   birthDate     DateTime? @map("birth_date")
   birthPlace    String?   @map("birth_place") @db.VarChar(64)
   tax           Int?
+  /** Id пригласившего партнёра (t_users.id), из ?partner= при регистрации */
+  partner       String?   @db.Char(36)
 
   agreementsAsClient     Agreement[]      @relation("AgreementClient")
   agreementsAsDriver     Agreement[]      @relation("AgreementDriver")
@@ -141,6 +143,8 @@ model Cargo {
   volume         Decimal?  @db.Decimal(15, 3)
   insurance      Decimal?  @db.Decimal(15, 2)
   currency       String    @default("RUB") @db.Char(3)
+  /** basic | pro. Копируется с компании при создании и дальше не меняется. */
+  plan           String    @default("pro") @db.VarChar(8)
   transportType  String?   @map("transport_type") @db.VarChar(36)
 
   routePoints CargoRoutePoint[]
@@ -200,6 +204,9 @@ model Company {
   payoutType             String   @default("BANK_ACCOUNT") @map("payout_type") @db.VarChar(16)
   cardNumberMask         String?  @map("card_number_mask") @db.VarChar(19)
   isVerified             Boolean  @default(false) @map("is_verified")
+  /** basic | pro. Новая компания начинает с basic. */
+  plan                   String   @default("basic") @db.VarChar(8)
+  proUnlocked            Boolean  @default(false) @map("pro_unlocked")
   createdAt              DateTime @default(now()) @map("created_at")
   updatedAt              DateTime @default(now()) @updatedAt @map("updated_at")
 
@@ -503,6 +510,8 @@ model Payment {
 model TransportType {
   id          String   @id @db.Char(36)
   name        String   @db.VarChar(255)
+  nameEn      String?  @map("name_en") @db.VarChar(255)
+  nameZh      String?  @map("name_zh") @db.VarChar(255)
   description String?  @db.VarChar(1024)
   formula     Int?
   minTarif    Decimal? @map("min_tarif") @db.Decimal(15, 2)

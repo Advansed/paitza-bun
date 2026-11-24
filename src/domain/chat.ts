@@ -4,6 +4,7 @@ import { readRoute } from "../lib/route";
 import { asUuid, fail, n, ok, round, uuid, type Result } from "../lib/result";
 import { userByToken, type Db } from "../lib/user";
 import { companyCurrency } from "./kassa";
+import { cargoPlanOf, planMismatch, viewerPlan } from "./plan";
 import { postDocument, unpostDocument } from "./money";
 import { cbrBoard } from "../pricing/cbrCny";
 import { localize } from "../pricing/fx";
@@ -195,6 +196,7 @@ export async function get_chats(params: Params): Promise<Result> {
   ]);
   const cargoById = new Map(cargos.map((c) => [c.id, c]));
   const userById = new Map(partners.map((u) => [u.id, u]));
+  const activePlan = await viewerPlan(user.id);
 
   const data = [];
   for (const dialog of dialogs) {
@@ -202,6 +204,7 @@ export async function get_chats(params: Params): Promise<Result> {
     const partnerId = dialog.customerId === user.id ? dialog.driverId : dialog.customerId;
     const partner = userById.get(partnerId);
     if (!cargo || !partner) continue;
+    if (cargoPlanOf(cargo.plan) !== activePlan) continue;
 
     const threadWhere = participants(dialog.cargoId, user.id, partnerId);
     const [last, unread_count] = await Promise.all([
@@ -244,6 +247,10 @@ export async function get_messages(params: Params): Promise<Result> {
 
   const cargo = asUuid(params.cargo);
   const recipient = asUuid(params.recipient);
+  if (cargo) {
+    const mismatch = await planMismatch(user.id, (await prisma.cargo.findUnique({ where: { id: cargo }, select: { plan: true } }))?.plan);
+    if (mismatch) return fail(mismatch);
+  }
   const limit = asIntDefault(params.limit, 50);
   const offset = asIntDefault(params.offset, 0);
   const where = cargo && recipient ? participants(cargo, user.id, recipient) : null;
@@ -278,6 +285,8 @@ export async function send_message(params: Params): Promise<Result> {
   const cargo = asUuid(params.cargo);
   const recipient = asUuid(params.recipient);
   if (!cargo || !recipient) return fail("Сообщение не записано");
+  const sendMismatch = await planMismatch(user.id, (await prisma.cargo.findUnique({ where: { id: cargo }, select: { plan: true } }))?.plan);
+  if (sendMismatch) return fail(sendMismatch);
 
   const id = uuid();
   const createdDate = new Date();
@@ -322,6 +331,8 @@ export async function send_image(params: Params): Promise<Result> {
   const cargo = asUuid(params.cargo);
   const recipient = asUuid(params.recipient);
   if (!cargo || !recipient) return fail("Изображение не записано");
+  const imageMismatch = await planMismatch(user.id, (await prisma.cargo.findUnique({ where: { id: cargo }, select: { plan: true } }))?.plan);
+  if (imageMismatch) return fail(imageMismatch);
 
   await prisma.chat.create({
     data: {
@@ -422,9 +433,10 @@ export async function create_contract(params: Params): Promise<Result> {
 
     const cargo = await prisma.cargo.findFirst({
       where: { id: cargoId, client: user.id },
-      select: { id: true },
+      select: { id: true, plan: true },
     });
     if (!cargo) return fail("Груз не найден или доступ запрещен");
+    if (cargoPlanOf(cargo.plan) !== "pro") return fail("Договор доступен в тарифе Pro");
 
     const move = await prisma.transportation.findFirst({
       where: { id: agreementId, cargo: cargoId },
@@ -478,9 +490,10 @@ export async function set_contract(params: Params): Promise<Result> {
 
     const existing = await prisma.agreement.findUnique({
       where: { id: agreementId },
-      select: { id: true },
+      select: { id: true, cargo: { select: { plan: true } } },
     });
     if (!existing) return fail("Соглашение с таким ID уже не существует");
+    if (cargoPlanOf(existing.cargo.plan) !== "pro") return fail("Договор доступен в тарифе Pro");
 
     await prisma.$transaction(async (tx) => {
       await tx.agreement.update({

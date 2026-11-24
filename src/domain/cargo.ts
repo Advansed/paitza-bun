@@ -17,6 +17,7 @@ import {
 } from "../lib/result";
 import { userByToken } from "../lib/user";
 import { NO_COMPANY, companyCurrency, kassaBalance, ownerCompany, recalcLefts } from "./kassa";
+import { basicStatusAllowed, cargoPlanOf, planMismatch, viewerPlan } from "./plan";
 
 type Params = Record<string, unknown>;
 
@@ -74,6 +75,13 @@ export async function set_cargo(params: Params): Promise<Result> {
 
   const company = await ownerCompany(user.id);
   const currency = companyCurrency(company?.currency);
+  const existing = await prisma.cargo.findUnique({ where: { id: cargoId }, select: { plan: true } });
+  if (existing) {
+    const mismatch = await planMismatch(user.id, existing.plan);
+    if (mismatch) return fail(mismatch);
+  }
+  const plan = existing ? cargoPlanOf(existing.plan) : company?.plan === "pro" ? "pro" : "basic";
+  const basic = plan !== "pro";
   try {
     await prisma.$transaction(async (tx) => {
       await tx.cargo.deleteMany({ where: { id: cargoId } });
@@ -88,14 +96,15 @@ export async function set_cargo(params: Params): Promise<Result> {
           client: user.id,
           price: dec(params.price),
           cost: dec(params.cost),
-          advance: dec(params.advance),
+          advance: basic ? "0" : dec(params.advance),
+          plan,
           transportType: params.transport_type == null ? null : String(params.transport_type),
           pickupDate: dateOrNull(params.pickup_date),
           deliveryDate: dateOrNull(params.delivery_date),
           description: params.description == null ? null : String(params.description),
           contactName: params.face == null ? null : String(params.face),
           volume: dec(params.volume),
-          insurance: dec(params.insurance),
+          insurance: basic ? "0" : dec(params.insurance),
           currency,
           routeDistance: dec(params.route_distance),
         },
@@ -115,8 +124,9 @@ export async function get_cargos(params: Params): Promise<Result> {
   const user = await prisma.user.findFirst({ where: { token } });
   if (!user) return fail("Invalid token");
 
+  const plan = await viewerPlan(user.id);
   const cargos = await prisma.cargo.findMany({
-    where: { client: user.id },
+    where: { client: user.id, plan },
     orderBy: { pickupDate: "desc" },
   });
   if (!cargos.length) return fail("Ошибка в данных или не найдены");
@@ -175,6 +185,7 @@ export async function get_cargos(params: Params): Promise<Result> {
       status: st.status,
       status_code: st.status_code,
       requires_action: st.requires_action,
+      plan: cargoPlanOf(c.plan),
       invoices,
     });
   }
@@ -195,10 +206,13 @@ export async function publish(params: Params): Promise<Result> {
 
   const cargo = await prisma.cargo.findUnique({ where: { id: cargoId } });
   if (!cargo) return fail("Ошибка: груз не найден");
+  const mismatch = await planMismatch(user.id, cargo.plan);
+  if (mismatch) return fail(mismatch);
   const company = await ownerCompany(user.id);
   if (!company) return fail(NO_COMPANY);
-  const advance = n(cargo.advance);
-  const insurance = n(cargo.insurance);
+  const basic = cargoPlanOf(cargo.plan) !== "pro";
+  const advance = basic ? 0 : n(cargo.advance);
+  const insurance = basic ? 0 : n(cargo.insurance);
   const cargoCurrencyCode = companyCurrency(cargo.currency);
   const required = advance + insurance;
   if (required > 0) {
@@ -211,13 +225,13 @@ export async function publish(params: Params): Promise<Result> {
   const moveId = uuid();
   try {
     await prisma.$transaction(async (tx) => {
-      if (advance > 0) {
+      if (!basic && advance > 0) {
         await tx.$executeRaw`
           INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
           VALUES (${cargoId}, 'Аванс', NOW(), 0, ${company.id}, ${advance}, ${cargoCurrencyCode})
         `;
       }
-      if (insurance > 0) {
+      if (!basic && insurance > 0) {
         await tx.$executeRaw`
           INSERT INTO t_kassa (id, category, period, flow, \`user\`, amount, currency)
           VALUES (${cargoId}, 'Страховка', NOW(), 0, ${company.id}, ${insurance}, ${cargoCurrencyCode})
@@ -257,6 +271,9 @@ export async function unpublish(params: Params): Promise<Result> {
 
   const company = await ownerCompany(user.id);
   if (!company) return fail(NO_COMPANY);
+  const cargo = await prisma.cargo.findUnique({ where: { id: cargoId }, select: { plan: true } });
+  const mismatch = await planMismatch(user.id, cargo?.plan);
+  if (mismatch) return fail(mismatch);
   const rows = await prisma.transportation.findMany({ where: { cargo: cargoId, client: user.id } });
   if (!rows.length) return fail("Публикация не найдена или у вас нет прав на её отмену");
   if (rows.some((r) => (r.status ?? 0) > 10)) {
@@ -287,6 +304,7 @@ async function addMoney(params: Params, field: "advance" | "insurance", okMessag
   if (!cargoId) return fail("Cargo not found or access denied");
   const cargo = await prisma.cargo.findFirst({ where: { id: cargoId, client: user.id } });
   if (!cargo) return fail("Cargo not found or access denied");
+  if (cargoPlanOf(cargo.plan) !== "pro") return fail("Финансы доступны в тарифе Pro");
   const current = n(cargo[field]);
   await prisma.cargo.update({
     where: { id: cargo.id },
@@ -431,11 +449,15 @@ export async function set_inv(params: Params): Promise<Result> {
   const cargo = move.cargo ? await prisma.cargo.findUnique({ where: { id: move.cargo } }) : null;
   const allowed = [move.client, move.driverId, cargo?.client].filter(Boolean);
   if (!allowed.includes(user.id)) return fail("Доступ к изменению статуса запрещен");
+  const mismatch = await planMismatch(user.id, cargo?.plan);
+  if (mismatch) return fail(mismatch);
+  const basic = cargoPlanOf(cargo?.plan) !== "pro";
+  if (basic && !basicStatusAllowed(status)) return fail("Этот статус недоступен в Basic");
 
   try {
     await prisma.$transaction(async (tx) => {
       await tx.transportation.update({ where: { id: moveId }, data: { status } });
-      if (status === 20) {
+      if (status === 20 && !basic) {
         const { create_deal_close, close_deal_payout } = await import("./money");
         const closed = await create_deal_close(params, tx);
         if (closed.success === false) {

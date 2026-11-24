@@ -214,6 +214,11 @@ install_and_generate() {
     echo "PRISMA_DB_PUSH…"
     bunx prisma db push
     echo "PRISMA_DB_PUSH_OK"
+    if [ "${PAITZA_SEED_TRANSPORT_I18N:-1}" = "1" ]; then
+      echo "SEED_TRANSPORT_I18N…"
+      bun run db:seed-transport-i18n || node scripts/seed-transport-type-i18n.mjs
+      echo "SEED_TRANSPORT_I18N_OK"
+    fi
   fi
 }
 

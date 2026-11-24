@@ -99,6 +99,77 @@ export async function createSBPPayment(orderData: {
   };
 }
 
+type CardPaymentResult =
+  | { success: false; message: string | undefined; error_code: string | undefined }
+  | {
+      success: true;
+      payment_id: string;
+      payment_url: string;
+      order_id: string | undefined;
+      status: string | undefined;
+    };
+
+export function tinkoffNotifyUrl() {
+  return process.env.TINKOFF_NOTIFY_URL || "https://paitza.com/api/tinkoff_payment";
+}
+
+export async function createCardPayment(orderData: {
+  amount: number;
+  orderId: string;
+  description?: string;
+  success_url: string;
+  fail_url: string;
+  callback_url: string;
+}): Promise<CardPaymentResult> {
+  const { terminalKey, password } = config();
+  const body: Record<string, unknown> = {
+    TerminalKey: terminalKey,
+    Amount: orderData.amount,
+    OrderId: orderData.orderId,
+    Description: orderData.description ?? "",
+    SuccessURL: orderData.success_url,
+    FailURL: orderData.fail_url,
+    NotificationURL: orderData.callback_url,
+    PayType: "O",
+  };
+  body.Token = tinkoffToken({
+    Amount: body.Amount,
+    Description: body.Description,
+    FailURL: body.FailURL,
+    NotificationURL: body.NotificationURL,
+    OrderId: body.OrderId,
+    SuccessURL: body.SuccessURL,
+    PayType: body.PayType,
+    Password: password,
+    TerminalKey: terminalKey,
+  });
+
+  const response = await fetch(`${baseURL}Init`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json() as {
+    Success?: boolean;
+    PaymentId?: string;
+    PaymentURL?: string;
+    OrderId?: string;
+    Status?: string;
+    Message?: string;
+    ErrorCode?: string;
+  };
+  if (!data.Success || !data.PaymentId || !data.PaymentURL) {
+    return { success: false, message: data.Message, error_code: data.ErrorCode };
+  }
+  return {
+    success: true,
+    payment_id: data.PaymentId,
+    payment_url: data.PaymentURL,
+    order_id: data.OrderId,
+    status: data.Status,
+  };
+}
+
 export async function getQrCode(paymentId: string) {
   const { terminalKey, password } = config();
   const body: Record<string, unknown> = {

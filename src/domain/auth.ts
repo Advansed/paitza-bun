@@ -49,6 +49,7 @@ function emptyUser(id: string, phone: string, extra: {
   birthPlace?: string | null;
   pincode?: string | null;
   token?: string;
+  partner?: string | null;
 }) {
   return {
     id,
@@ -71,7 +72,16 @@ function emptyUser(id: string, phone: string, extra: {
     gender: extra.gender ?? null,
     birthDate: extra.birthDate ?? null,
     birthPlace: extra.birthPlace ?? null,
+    partner: extra.partner ?? null,
   };
+}
+
+/** GUID пригласившего из params.partner — только если такой пользователь есть */
+async function resolvePartnerId(raw: unknown): Promise<string | null> {
+  const id = asUuid(raw);
+  if (!id) return null;
+  const found = await prisma.user.findUnique({ where: { id }, select: { id: true } });
+  return found?.id ?? null;
 }
 
 export async function authorization(params: Params): Promise<Result> {
@@ -118,6 +128,7 @@ export async function check_registration(params: Params): Promise<Result> {
   const birthDate = dateOrNull(params.birth_date);
   const birthPlace = params.birth_place == null ? "" : String(params.birth_place);
   const gender = boolBit(params.gender, true);
+  const partner = await resolvePartnerId(params.partner);
 
   if (existing) {
     await prisma.user.update({
@@ -131,12 +142,13 @@ export async function check_registration(params: Params): Promise<Result> {
         gender,
         birthDate,
         birthPlace,
+        ...(partner ? { partner } : {}),
       },
     });
   } else {
     await prisma.user.create({
       data: emptyUser(uuid(), phone, {
-        name, email, userType, gender, birthDate, birthPlace, pincode: PINCODE,
+        name, email, userType, gender, birthDate, birthPlace, pincode: PINCODE, partner,
       }),
     });
   }
@@ -149,6 +161,38 @@ export async function check_registration(params: Params): Promise<Result> {
     pincode: PINCODE,
     phone,
   });
+}
+
+/** Пользователи, пришедшие по ссылке партнёра: pending (без пароля) / accepted (зарегистрированы). */
+export async function get_partner_referrals(params: Params): Promise<Result> {
+  const me = await userByToken(params.token);
+  if (!me) return fail("Неверный токен");
+
+  const rows = await prisma.user.findMany({
+    where: { partner: me.id },
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      email: true,
+      password: true,
+      userType: true,
+    },
+    orderBy: { name: "asc" },
+  });
+
+  const mapRow = (row: (typeof rows)[number]) => ({
+    id: row.id,
+    name: row.name || "",
+    phone: row.code,
+    email: row.email || "",
+    user_type: row.userType,
+  });
+
+  const pending = rows.filter((row) => !row.password).map(mapRow);
+  const accepted = rows.filter((row) => Boolean(row.password)).map(mapRow);
+
+  return ok({ data: { pending, accepted } });
 }
 
 export async function check_phone(params: Params): Promise<Result> {

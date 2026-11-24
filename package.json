@@ -9,6 +9,7 @@
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:seed-urban": "node scripts/seed-urban-coef.mjs",
+    "db:seed-transport-i18n": "node scripts/seed-transport-type-i18n.mjs",
     "deploy": "node scripts/deploy.mjs",
     "deploy:setup": "node scripts/deploy.mjs --setup-only"
   },

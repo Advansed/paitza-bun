@@ -14,6 +14,7 @@ import {
 } from "../lib/result";
 import { userByToken } from "../lib/user";
 import { companyCurrency, ownerCompany } from "./kassa";
+import { basicStatusAllowed, cargoPlanOf, planMismatch, viewerPlan } from "./plan";
 import { shareAdvance } from "./money";
 import { cbrBoard } from "../pricing/cbrCny";
 import { localize } from "../pricing/fx";
@@ -57,7 +58,9 @@ export async function get_works(params: Params): Promise<Result> {
     if (row.status === 10 && row.cargo && !publishedAt.has(row.cargo)) publishedAt.set(row.cargo, row.period);
   }
 
-  const viewerCurrency = companyCurrency((await ownerCompany(user.id))?.currency);
+  const viewerCompany = await ownerCompany(user.id);
+  const activePlan = await viewerPlan(user.id);
+  const viewerCurrency = companyCurrency(viewerCompany?.currency);
   let rates: Record<string, number> = { RUB: 1 };
   let rateDate = "";
   try {
@@ -73,6 +76,7 @@ export async function get_works(params: Params): Promise<Result> {
     if (!tr.cargo) continue;
     const cargo = await prisma.cargo.findUnique({ where: { id: tr.cargo } });
     if (!cargo) continue;
+    if (cargoPlanOf(cargo.plan) !== activePlan) continue;
     const ordered = orderedByCargo.get(cargo.id) ?? 0;
     const cargoWeight = n(cargo.weight);
     if (tr.status === 10 && (!(cargoWeight > ordered) || claimed.has(cargo.id))) continue;
@@ -137,6 +141,7 @@ export async function get_works(params: Params): Promise<Result> {
       pickup_date: ymd(cargo.pickupDate),
       delivery_date: ymd(cargo.deliveryDate),
       status: WORK_STATUS[tr.status ?? -1] ?? "Неизвестно",
+      plan: cargoPlanOf(cargo.plan),
       signed: agreement?.driverSign != null,
     });
   }
@@ -153,6 +158,11 @@ export async function set_offer(params: Params): Promise<Result> {
   const cost = params.price == null ? null : n(params.price);
   const status = params.status == null ? 11 : Number(params.status);
   if (!cargo || !transport) return fail("Ошибка сервера: не указан груз или транспорт");
+  const cargoRowEarly = await prisma.cargo.findUnique({ where: { id: cargo } });
+  if (!cargoRowEarly) return fail("Груз не найден");
+  const offerMismatch = await planMismatch(user.id, cargoRowEarly.plan);
+  if (offerMismatch) return fail(offerMismatch);
+  const basicCargo = cargoPlanOf(cargoRowEarly.plan) !== "pro";
 
   let assigned = user.id;
   const truck = await prisma.transport.findUnique({ where: { id: transport } });
@@ -203,7 +213,7 @@ export async function set_offer(params: Params): Promise<Result> {
         });
       }
       const row = await tx.cargo.findUnique({ where: { id: cargo } });
-      if (row?.client) {
+      if (row?.client && !basicCargo) {
         const summ = round(cost ?? 0, 2);
         const advance = shareAdvance(n(row.weight), n(row.advance), weight);
         const amount = round(Math.max(0, summ - advance), 2);
@@ -249,6 +259,11 @@ export async function set_status(params: Params): Promise<Result> {
   const move = await prisma.transportation.findUnique({ where: { id: guid } });
   if (!move) return fail("Ошибка сервера: параметры не заданы");
   const cargoRow = move.cargo ? await prisma.cargo.findUnique({ where: { id: move.cargo } }) : null;
+  const statusMismatch = await planMismatch(user.id, cargoRow?.plan);
+  if (statusMismatch) return fail(statusMismatch);
+  if (cargoRow && cargoPlanOf(cargoRow.plan) !== "pro" && !basicStatusAllowed(status)) {
+    return fail("Этот статус недоступен в Basic");
+  }
   try {
     await prisma.transportation.update({ where: { id: guid }, data: { status } });
     return ok({
@@ -271,6 +286,9 @@ export async function del_offer(params: Params): Promise<Result> {
   if (!user) return fail("Invalid token");
   const offer = await prisma.transportation.findFirst({ where: { id: offerId, client: user.id } });
   if (!offer) return fail("Предложение не найдено или у вас нет прав на его отзыв");
+  const offerCargo = offer.cargo ? await prisma.cargo.findUnique({ where: { id: offer.cargo }, select: { plan: true } }) : null;
+  const deleteMismatch = await planMismatch(user.id, offerCargo?.plan);
+  if (deleteMismatch) return fail(deleteMismatch);
   if ((offer.status ?? 0) > 11) {
     return fail("Невозможно отозвать предложение: заказ уже в работе или подтвержден");
   }

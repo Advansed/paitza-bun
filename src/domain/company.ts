@@ -2,6 +2,8 @@ import { prisma } from "../db";
 import { getPhone } from "../lib/phone";
 import { asUuid, fail, ok, uuid } from "../lib/result";
 import { userByToken } from "../lib/user";
+import { asPlan } from "./plan";
+import { NO_COMPANY, ownerCompany } from "./kassa";
 
 type Params = Record<string, unknown>;
 
@@ -73,6 +75,8 @@ function emptyCompany(): Record<string, unknown> {
     payout_type: "BANK_ACCOUNT",
     card_number_mask: "",
     is_verified: false,
+    plan: "basic",
+    pro_unlocked: false,
     created_at: "",
     updated_at: "",
     files: [],
@@ -125,6 +129,8 @@ export async function get_company(params: Params): Promise<Record<string, unknow
       payout_type: company.payoutType,
       card_number_mask: company.cardNumberMask ?? "",
       is_verified: company.isVerified,
+      plan: asPlan(company.plan),
+      pro_unlocked: company.proUnlocked,
       created_at: stamp(company.createdAt),
       updated_at: stamp(company.updatedAt),
     };
@@ -266,6 +272,30 @@ export async function set_company(params: Params): Promise<Record<string, unknow
       },
     });
     return ok({ message: "Данные контрагента обновлены" });
+  } catch (error) {
+    return serverError(error);
+  }
+}
+
+export async function set_plan(params: Params): Promise<Record<string, unknown>> {
+  try {
+    const user = await userByToken(readUuid(params.token));
+    if (!user) return fail("Неверный токен");
+    const plan = asPlan(params.plan);
+    const company = await ownerCompany(user.id);
+    if (!company) return fail(NO_COMPANY);
+    if (plan === "pro" && !company.proUnlocked) {
+      return fail("Pro откроется после пополнения счёта");
+    }
+    await prisma.company.update({
+      where: { id: company.id },
+      data: { plan, updatedAt: new Date() },
+    });
+    return ok({
+      message: plan === "pro" ? "Включён тариф Pro" : "Включён тариф Basic",
+      plan,
+      pro_unlocked: company.proUnlocked,
+    });
   } catch (error) {
     return serverError(error);
   }

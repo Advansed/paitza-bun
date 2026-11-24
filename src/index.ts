@@ -4,6 +4,7 @@ import { createAdaptorServer } from "@hono/node-server";
 import { disconnectPrisma } from "./db";
 import { createApp } from "./http/app";
 import { ensureBucketCors } from "./services/storage";
+import { ensurePlans } from "./domain/plan";
 import { attachSockets } from "./socket/handlers";
 
 const PORT = Number(process.env.PORT || 3000);
@@ -20,13 +21,22 @@ const io = new Server(server, {
 
 attachSockets(io);
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
-  console.log(`Статус: http://localhost:${PORT}/api/status`);
-  void ensureBucketCors().catch((error) => {
-    console.error("CORS бакета kz-files не записан:", error instanceof Error ? error.message : error);
+async function start() {
+  try {
+    await ensurePlans();
+  } catch (error) {
+    console.error("Тарифы не подготовлены:", error instanceof Error ? error.message : error);
+  }
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Сервер запущен на порту ${PORT}`);
+    console.log(`Статус: http://localhost:${PORT}/api/status`);
+    void ensureBucketCors().catch((error) => {
+      console.error("CORS бакета kz-files не записан:", error instanceof Error ? error.message : error);
+    });
   });
-});
+}
+
+void start();
 
 async function shutdown() {
   await new Promise<void>((resolve) => server.close(() => resolve()));

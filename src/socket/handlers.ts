@@ -6,7 +6,7 @@ import { verifyPassportPhoto, verifyPassportRegistration } from "../services/pas
 import { notifyChatMessage, notifyNewOrder, notifyOffer, notifyStatusChange } from "../services/push";
 import { checkGatewayCode, sendGatewayVerification } from "../services/sms";
 import { decodeBase64File, getFotosBuffer, resolveImageInput, uploadFotos } from "../services/storage";
-import { checkPaymentStatus, createSBPPayment, formatDateWithTimezone } from "../services/tinkoff";
+import { checkPaymentStatus, createCardPayment, createSBPPayment, formatDateWithTimezone, tinkoffNotifyUrl } from "../services/tinkoff";
 import { SocketManager, type AppSocket } from "./manager";
 
 const sockets = new SocketManager();
@@ -307,6 +307,41 @@ export const attachSockets                          = (io: Server) => {
         },
       });
     });
+    on("create_payment_card", async (data) => {
+      const dbResult = await method(socket, "create_payment", data);
+      if (!dbResult.success) {
+        socket.emit("create_payment_card", { success: false, message: dbResult.message });
+        return;
+      }
+      const back = "https://paitza.com/finance";
+      const payment = await createCardPayment({
+        orderId: String(dbResult.id ?? `card_${Date.now()}`),
+        amount: Number(data.amount) * 100,
+        description: data.description == null ? "" : String(data.description),
+        success_url: data.success_url == null ? back : String(data.success_url),
+        fail_url: data.fail_url == null ? back : String(data.fail_url),
+        callback_url: tinkoffNotifyUrl(),
+      });
+      if (!payment.success) {
+        socket.emit("create_payment_card", { success: false, message: payment.message });
+        return;
+      }
+      await method(socket, "set_payment", {
+        id: dbResult.id,
+        paymentId: payment.payment_id,
+        paymentUrl: payment.payment_url,
+      });
+      socket.emit("create_payment_card", {
+        success: true,
+        data: {
+          payment_id: payment.payment_id,
+          order_id: payment.order_id,
+          payment_url: payment.payment_url,
+          status: payment.status,
+          amount: data.amount,
+        },
+      });
+    });
     on("get_sbp_banks", () => {
       socket.emit("get_sbp_banks", { success: true, data: { banks: [] } });
     });
@@ -345,6 +380,14 @@ export const attachSockets                          = (io: Server) => {
       if (result.success) await method(socket, "get_company", data);
     });
     on("get_company", (data) => method(socket, "get_company", data));
+    on("set_plan", async (data) => {
+      const result = await method(socket, "set_plan", data);
+      if (result.success) {
+        await method(socket, "get_cargos", data);
+        await method(socket, "get_works", data);
+        await method(socket, "get_chats", data);
+      }
+    });
     for (const event of ["add_company_member", "upd_company_member", "del_company_member"]) {
       on(event, async (data) => {
         const result = await method(socket, event, data);
@@ -352,6 +395,7 @@ export const attachSockets                          = (io: Server) => {
       });
     }
     on("get_company_members", (data) => method(socket, "get_company_members", data));
+    on("get_partner_referrals", (data) => method(socket, "get_partner_referrals", data));
     on("set_location", async (data) => {
       const result = await method(socket, "set_location", data);
       if (result.success) emitOrderLocations(result);

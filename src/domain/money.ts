@@ -310,6 +310,11 @@ async function creditTopups(db: Db, rows: KassaIn[]) {
     if (!existing) fresh.push(row);
   }
   await insertKassa(db, fresh);
+  const topped = fresh.filter((row) => row.category === "Пополнение" && row.amount > 0);
+  if (topped.length) {
+    const { unlockPro } = await import("./plan");
+    await unlockPro(db, topped.map((row) => row.companyId));
+  }
 }
 
 async function exchangeAdvanceReserve(userId: string, db: Db = prisma): Promise<number> {

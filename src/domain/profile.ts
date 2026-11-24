@@ -447,7 +447,15 @@ export async function get_transport_types(params: Params): Promise<Record<string
 
     const rows = await prisma.transportType.findMany();
     const data = rows.map((row) => {
-      const item: Record<string, unknown> = { id: row.id, name: row.name };
+      const ru = row.name;
+      const item: Record<string, unknown> = {
+        id: row.id,
+        // name — совместимость со старым клиентом
+        name: ru,
+        ru,
+        en: row.nameEn?.trim() || ru,
+        zh: row.nameZh?.trim() || ru,
+      };
       if (row.description != null) item.description = row.description;
       if (row.formula != null) item.formula = row.formula;
       if (row.minTarif != null) item.min_tarif = n(row.minTarif);

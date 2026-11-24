@@ -13,10 +13,12 @@ import {
   uploadFotos,
 } from "../services/storage";
 import { calculateHaul } from "../pricing/calculate";
+import { publicStats } from "../domain/publicStats";
 
 const ALLOWED = [
   "http://localhost:8100",
   "http://localhost:8101",
+  "http://localhost:5173",
   "https://localhost:3000",
   "https://paitza.com",
   "https://gruzreis.ru",
@@ -48,6 +50,14 @@ export function createApp() {
   }));
 
   app.get("/api/getVersion", (c) => c.json({ success: true, data: process.env.APP_VERSION || "1.0.1" }));
+
+  app.get("/api/public/stats", async (c) => {
+    try {
+      return c.json(await publicStats());
+    } catch {
+      return c.json({ success: false, message: "Не удалось собрать показатели" }, 500);
+    }
+  });
 
   app.post("/api/uploadFotos", async (c) => {
     const body = await c.req.parseBody();
