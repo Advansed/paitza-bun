@@ -55,6 +55,7 @@ async function addColumn(sql: string) {
 
 /** Колонки тарифа и разовая пометка уже живущих компаний и грузов. */
 export async function ensurePlans() {
+  await addColumn("ALTER TABLE t_users ADD COLUMN partner CHAR(36) NULL");
   await addColumn("ALTER TABLE t_company ADD COLUMN plan VARCHAR(8) NOT NULL DEFAULT 'basic'");
   await addColumn("ALTER TABLE t_company ADD COLUMN pro_unlocked TINYINT(1) NOT NULL DEFAULT 0");
   await addColumn("ALTER TABLE t_cargo ADD COLUMN plan VARCHAR(8) NOT NULL DEFAULT 'pro'");

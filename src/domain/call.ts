@@ -26,6 +26,7 @@ const procedures: Record<string, Proc> = {
   create_invoice: money.create_invoice,
   create_payment: money.create_payment,
   del_company_member: company.del_company_member,
+  delete_account: auth.delete_account,
   del_offer: driver.del_offer,
   get_agreement: auth.get_agreement,
   get_agreement_data: chat.get_agreement_data,

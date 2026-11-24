@@ -436,6 +436,8 @@ export const attachSockets                          = (io: Server) => {
       }
     });
 
+    on("delete_account", (data) => method(socket, "delete_account", data));
+
     on("check_passport_photo", (data) => checkPassport(socket, "check_passport_photo", data));
     on("check_passport_registration", (data) => checkPassport(socket, "check_passport_registration", data));
 

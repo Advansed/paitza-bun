@@ -10,10 +10,12 @@ import {
   boolBit,
   dateOrNull,
   fail,
+  n,
   ok,
   uuid,
   type Result,
 } from "../lib/result";
+import { kassaBalances } from "./kassa";
 import { agreementsOf, notificationsOf, ratingsOf, userByToken } from "../lib/user";
 
 type Params = Record<string, unknown>;
@@ -402,4 +404,83 @@ export async function agreements(params: Params): Promise<Result> {
     },
   });
   return ok({ message: "Соглашение сохранено" });
+}
+
+const DELETED_NAME = "Удалённый аккаунт";
+
+async function freeDeletedCode(): Promise<string | null> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = `d${randomBytes(8).toString("hex").slice(0, 15)}`;
+    const taken = await prisma.user.findFirst({ where: { code }, select: { id: true } });
+    if (!taken) return code;
+  }
+  return null;
+}
+
+/** Закрывает вход и стирает личные поля. Строка пользователя остаётся из‑за договоров и рейсов. */
+export async function delete_account(params: Params): Promise<Result> {
+  const user = await userByToken(params.token);
+  if (!user) return fail("Неверный токен");
+
+  const reasons: string[] = [];
+  const cargos = await prisma.cargo.findMany({ where: { client: user.id }, select: { id: true } });
+  if (cargos.length > 0) {
+    const open = await prisma.cargoTotal.count({
+      where: { cargoId: { in: cargos.map((row) => row.id) }, maxStatus: { in: [10, 11] } },
+    });
+    if (open > 0) reasons.push("завершите или снимите с публикации открытые грузы");
+  }
+
+  const trips = await prisma.transportation.count({
+    where: {
+      status: { gte: 11, lte: 19 },
+      OR: [{ client: user.id }, { driverId: user.id }],
+    },
+  });
+  if (trips > 0) reasons.push("завершите рейсы в работе");
+
+  const balances = await kassaBalances(user.id);
+  if (balances.some((row) => Math.abs(row.balance) > 0.009)) reasons.push("выведите деньги со счёта");
+
+  const lefts = await prisma.dealLeft.findMany({
+    where: { OR: [{ clientId: user.id }, { performerId: user.id }] },
+    select: { amount: true, advance: true },
+  });
+  const unpaid = lefts.some((row) => Math.abs(n(row.amount)) > 0.009 || Math.abs(n(row.advance)) > 0.009);
+  if (unpaid) reasons.push("закройте незавершённые расчёты");
+
+  if (reasons.length > 0) return fail(`Удаление недоступно: ${reasons.join(", ")}.`);
+
+  const code = await freeDeletedCode();
+  if (!code) return fail("Не удалось подготовить удаление аккаунта");
+  const password = await hashPassword(randomBytes(32).toString("hex"));
+
+  await prisma.$transaction(async (tx) => {
+    await tx.companyMember.deleteMany({ where: { userId: user.id } });
+    await tx.transport.updateMany({
+      where: { ownerId: user.id },
+      data: { driverFio: null, driverPhone: null },
+    });
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        code,
+        name: DELETED_NAME,
+        email: null,
+        password,
+        token: null,
+        image: null,
+        description: null,
+        pincode: null,
+        passport: null,
+        pushToken: null,
+        birthDate: null,
+        birthPlace: null,
+        requestId: null,
+        gender: null,
+      },
+    });
+  });
+
+  return ok({ message: "Аккаунт удалён" });
 }
